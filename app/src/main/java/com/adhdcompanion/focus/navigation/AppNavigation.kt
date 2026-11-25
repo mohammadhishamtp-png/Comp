@@ -42,6 +42,7 @@ import com.adhdcompanion.focus.blocker.FocusLockManager
 import com.adhdcompanion.focus.di.AppContainer
 import com.adhdcompanion.focus.ui.components.FocusBottomBar
 import com.adhdcompanion.focus.ui.screens.BrainDumpScreen
+import com.adhdcompanion.focus.ui.screens.DashboardScreen
 import com.adhdcompanion.focus.ui.screens.DoubtSolverScreen
 import com.adhdcompanion.focus.ui.screens.FocusLockScreen
 import com.adhdcompanion.focus.ui.screens.NowBriefingScreen
@@ -57,6 +58,7 @@ sealed class FocusDestination(val route: String) {
     data object BrainDump : FocusDestination("brain_dump")
     data object Settings : FocusDestination("settings")
     data object FocusLock : FocusDestination("focus_lock")
+    data object Dashboard : FocusDestination("dashboard")
 }
 
 data class BlockedRedirectPrompt(
@@ -79,7 +81,8 @@ fun AppNavigation(
     val currentRoute = backStackEntry?.destination?.hierarchy?.firstOrNull()?.route
 
     val showBottomBar = currentRoute != FocusDestination.Settings.route &&
-        currentRoute != FocusDestination.FocusLock.route
+        currentRoute != FocusDestination.FocusLock.route &&
+        currentRoute != FocusDestination.Dashboard.route
 
     val currentTab = when (currentRoute) {
         FocusDestination.Stuck.route -> FocusDestination.Stuck
@@ -161,6 +164,7 @@ fun AppNavigation(
                     autoSpeakTriggerId = autoSpeakTriggerId,
                     onOpenSettings = { navController.navigate(FocusDestination.Settings.route) },
                     onOpenFocusLock = { navController.navigate(FocusDestination.FocusLock.route) },
+                    onOpenDashboard = { navController.navigate(FocusDestination.Dashboard.route) },
                     onOpenPlanner = {
                         navController.navigate(FocusDestination.Planner.route) {
                             popUpTo(navController.graph.findStartDestination().id) { saveState = true }
@@ -193,6 +197,22 @@ fun AppNavigation(
                 FocusLockScreen(
                     container = container,
                     onBack = { navController.popBackStack() }
+                )
+            }
+            composable(FocusDestination.Dashboard.route) {
+                DashboardScreen(
+                    container = container,
+                    onBack = { navController.popBackStack() },
+                    onOpenPlanner = {
+                        navController.navigate(FocusDestination.Planner.route) {
+                            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                    onOpenFocusLock = {
+                        navController.navigate(FocusDestination.FocusLock.route)
+                    }
                 )
             }
         }

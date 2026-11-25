@@ -120,3 +120,36 @@ data class LockEvaluationState(
     val isTemporaryUnlocked: Boolean = false,
     val tempUnlockRemainingSeconds: Int = 0
 )
+
+data class BlockedAppEvent(
+    val dayEpoch: Long,
+    val packageName: String,
+    val appLabel: String,
+    val timestampMillis: Long
+)
+
+data class DailyFocusStat(
+    val dayEpoch: Long,
+    val dayLabel: String,
+    val dateLabel: String,
+    val focusedMinutes: Int,
+    val completedBlocks: Int,
+    val blockedAttempts: Int,
+    val isToday: Boolean
+)
+
+data class BlockedAppSummary(
+    val packageName: String,
+    val appLabel: String,
+    val attemptCount: Int
+)
+
+data class WeeklyDashboardStats(
+    val dailyStats: List<DailyFocusStat> = emptyList(),
+    val topBlockedApps: List<BlockedAppSummary> = emptyList(),
+    val currentStreakDays: Int = 0,
+    val bestStreakDays: Int = 0,
+    val totalWeeklyFocusMinutes: Int = 0,
+    val totalWeeklyCompletedBlocks: Int = 0,
+    val totalWeeklyBlockedAttempts: Int = 0
+)

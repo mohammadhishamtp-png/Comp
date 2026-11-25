@@ -35,4 +35,8 @@ object ViewModelFactories {
     fun focusLock(application: Application, container: AppContainer) = viewModelFactory {
         initializer { FocusLockViewModel(application, container) }
     }
+
+    fun dashboard(container: AppContainer) = viewModelFactory {
+        initializer { DashboardViewModel(container) }
+    }
 }

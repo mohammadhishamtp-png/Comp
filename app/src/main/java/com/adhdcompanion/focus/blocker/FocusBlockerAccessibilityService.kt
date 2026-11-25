@@ -100,6 +100,11 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         lastRedirectedPackage = blockedPackage
         lastRedirectMs = now
 
+        FocusLockManager.getInstance(this).recordBlockedAttempt(
+            packageName = blockedPackage,
+            appLabel = appLabel
+        )
+
         if (performHomeFirst) {
             performGlobalAction(GLOBAL_ACTION_HOME)
         } else {

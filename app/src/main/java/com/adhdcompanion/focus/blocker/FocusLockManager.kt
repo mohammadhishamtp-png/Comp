@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import com.adhdcompanion.focus.alarm.AlarmScheduler
+import com.adhdcompanion.focus.model.BlockedAppEvent
 import com.adhdcompanion.focus.model.FocusLockConfig
 import com.adhdcompanion.focus.model.FocusLockWindow
 import com.adhdcompanion.focus.model.InstalledAppInfo
@@ -11,10 +12,12 @@ import com.adhdcompanion.focus.model.LockEvaluationState
 import com.adhdcompanion.focus.model.LockMode
 import com.adhdcompanion.focus.notification.NotificationHelper
 import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.util.Locale
@@ -36,11 +39,37 @@ class FocusLockManager private constructor(context: Context) {
     private val _evaluation = MutableStateFlow(computeEvaluation(_config.value, System.currentTimeMillis()))
     val evaluation: StateFlow<LockEvaluationState> = _evaluation.asStateFlow()
 
+    private val _blockedEvents = MutableStateFlow(loadBlockedEvents())
+    val blockedEvents: StateFlow<List<BlockedAppEvent>> = _blockedEvents.asStateFlow()
+
     @Synchronized
     private fun loadConfig(): FocusLockConfig {
         val raw = prefs.getString(KEY_CONFIG_JSON, null) ?: return FocusLockConfig()
         return runCatching { gson.fromJson(raw, FocusLockConfig::class.java) }
             .getOrNull() ?: FocusLockConfig()
+    }
+
+    @Synchronized
+    private fun loadBlockedEvents(): List<BlockedAppEvent> {
+        val raw = prefs.getString(KEY_BLOCKED_EVENTS_JSON, null) ?: return emptyList()
+        val type = object : TypeToken<List<BlockedAppEvent>>() {}.type
+        return runCatching { gson.fromJson<List<BlockedAppEvent>>(raw, type) }
+            .getOrNull() ?: emptyList()
+    }
+
+    @Synchronized
+    fun recordBlockedAttempt(packageName: String, appLabel: String) {
+        val now = System.currentTimeMillis()
+        val todayEpoch = LocalDate.now(ZoneId.systemDefault()).toEpochDay()
+        val cutoffEpoch = todayEpoch - 30L
+        val updated = (_blockedEvents.value + BlockedAppEvent(
+            dayEpoch = todayEpoch,
+            packageName = packageName,
+            appLabel = appLabel,
+            timestampMillis = now
+        )).filter { it.dayEpoch >= cutoffEpoch }
+        prefs.edit().putString(KEY_BLOCKED_EVENTS_JSON, gson.toJson(updated)).apply()
+        _blockedEvents.value = updated
     }
 
     @Synchronized
@@ -339,6 +368,7 @@ class FocusLockManager private constructor(context: Context) {
     companion object {
         private const val PREFS_NAME = "focus_lock_prefs"
         private const val KEY_CONFIG_JSON = "focus_lock_config_json"
+        private const val KEY_BLOCKED_EVENTS_JSON = "blocked_app_events_json"
         private const val TEMP_UNLOCK_DURATION_MS = 5 * 60_000L
 
         @Volatile

@@ -26,6 +26,24 @@ class BlockRepository(
     fun observeBlocksForDay(dayEpoch: Long = todayEpoch()): Flow<List<DayBlock>> =
         dao.observeBlocksForDay(dayEpoch).map { list -> list.map { it.toDomain() } }
 
+    fun observeBlocksInLastWeek(): Flow<List<Pair<Long, DayBlock>>> {
+        val end = todayEpoch()
+        val start = end - 6L
+        return dao.observeBlocksInRange(start, end).map { list ->
+            list.map { it.dayEpoch to it.toDomain() }
+        }
+    }
+
+    fun observeAllCompletedBlockEpochs(): Flow<Map<Long, Int>> {
+        val today = todayEpoch()
+        return dao.observeAllCompletedBlocks(today).map { list ->
+            list.groupBy { it.dayEpoch }
+                .mapValues { (_, items) ->
+                    items.filter { !it.isDecompressionBuffer }.sumOf { it.durationMinutes }
+                }
+        }
+    }
+
     suspend fun getBlocksForDay(dayEpoch: Long = todayEpoch()): List<DayBlock> =
         withContext(Dispatchers.IO) {
             dao.getBlocksForDay(dayEpoch).map { it.toDomain() }

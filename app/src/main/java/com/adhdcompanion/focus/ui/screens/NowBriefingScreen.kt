@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AlarmOff
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Lock
@@ -70,6 +71,7 @@ fun NowBriefingScreen(
     autoSpeakTriggerId: Int = 0,
     onOpenSettings: () -> Unit,
     onOpenFocusLock: () -> Unit,
+    onOpenDashboard: () -> Unit,
     onOpenPlanner: () -> Unit
 ) {
     val viewModel = viewModel<NowViewModel>(factory = ViewModelFactories.now(container))
@@ -106,6 +108,16 @@ fun NowBriefingScreen(
         ) {
             Text("Right now", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onOpenDashboard,
+                    modifier = Modifier.testTag("open_dashboard_button")
+                ) {
+                    Icon(
+                        Icons.Filled.BarChart,
+                        contentDescription = "Focus Dashboard",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
                 IconButton(
                     onClick = onOpenFocusLock,
                     modifier = Modifier.testTag("open_focus_lock_button")
