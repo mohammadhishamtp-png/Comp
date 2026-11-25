@@ -111,7 +111,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                 Column(Modifier.weight(1f)) {
                     Text("Use lighter fallback model", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Switch planning/unblocking calls to gemini-3.5-flash-lite instead of gemini-4-hydrogen.",
+                        "Switch planning/unblocking calls to gemini-3.5-flash-lite instead of gemini-3.8-flash.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
