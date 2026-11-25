@@ -9,9 +9,11 @@ import com.adhdcompanion.focus.model.UnblockerResponse
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.HttpException
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
@@ -43,7 +45,7 @@ class GeminiRepository(private val prefs: SecurePrefsManager) {
             .create(GeminiApiService::class.java)
     }
 
-    private val primaryModel = "gemini-4-hydrogen"
+    private val primaryModel = "gemini-3.8-flash"
     private val fallbackModel = "gemini-3.5-flash-lite"
     private val ttsModel = "gemini-3.8-flash-tts"
 
@@ -208,12 +210,12 @@ Respond ONLY with JSON matching this schema:
         )
         val model = activeTextModel()
         val response = try {
-            api.generateContent(model, apiKey, request)
+            generateWithRetry(model, apiKey, request)
         } catch (primaryFailure: Exception) {
             // Automatic fallback to the lighter model if the primary one fails
             // (unavailable, rate-limited, or not yet enabled on the key).
             if (model != fallbackModel) {
-                api.generateContent(fallbackModel, apiKey, request)
+                generateWithRetry(fallbackModel, apiKey, request)
             } else {
                 throw primaryFailure
             }
@@ -221,6 +223,28 @@ Respond ONLY with JSON matching this schema:
         val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
             ?: throw IllegalStateException("Gemini returned no content")
         return gson.fromJson(text, T::class.java)
+    }
+
+    /**
+     * Retries temporary Gemini failures (503 overloaded, 429 rate limit, 500)
+     * a few times with a short backoff before giving up.
+     */
+    private suspend fun generateWithRetry(
+        model: String,
+        apiKey: String,
+        request: GeminiRequest
+    ): GeminiResponse {
+        var attempt = 0
+        while (true) {
+            try {
+                return api.generateContent(model, apiKey, request)
+            } catch (e: HttpException) {
+                val retryable = e.code() == 503 || e.code() == 429 || e.code() == 500
+                if (!retryable || attempt >= 3) throw e
+                delay(1500L * (attempt + 1))
+                attempt++
+            }
+        }
     }
 
     private fun requireApiKey(): String {
