@@ -1,34 +1,110 @@
 package com.adhdcompanion.focus
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.adhdcompanion.focus.alarm.AlarmEventBus
+import com.adhdcompanion.focus.alarm.AlarmSoundPlayer
 import com.adhdcompanion.focus.navigation.AppNavigation
+import com.adhdcompanion.focus.navigation.BlockedRedirectPrompt
+import com.adhdcompanion.focus.notification.NotificationHelper
 import com.adhdcompanion.focus.ui.theme.ADHDFocusCompanionTheme
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
+
+    private var autoSpeakTriggerId by mutableIntStateOf(0)
+    private var navigateToNowTriggerId by mutableIntStateOf(0)
+    private var navigateToFocusLockTriggerId by mutableIntStateOf(0)
+    private var blockedPrompt by mutableStateOf<BlockedRedirectPrompt?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         val container = (application as App).container
+        handleIntent(intent)
 
         setContent {
             ADHDFocusCompanionTheme {
+                // Listen for foreground alarm events so SpeechManager speaks via EXTRA_AUTO_SPEAK
+                LaunchedEffect(Unit) {
+                    AlarmEventBus.events.collect { event ->
+                        navigateToNowTriggerId++
+                        if (event.autoSpeak) {
+                            delay(1600L) // Let alarm chime sound briefly before speaking briefing
+                            AlarmSoundPlayer.stop()
+                            NotificationHelper.cancelAlarmNotification(this@MainActivity)
+                            autoSpeakTriggerId++
+                        }
+                    }
+                }
+
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    AppRoot(container)
+                    AppNavigation(
+                        container = container,
+                        autoSpeakTriggerId = autoSpeakTriggerId,
+                        navigateToNowTriggerId = navigateToNowTriggerId,
+                        navigateToFocusLockTriggerId = navigateToFocusLockTriggerId,
+                        blockedPrompt = blockedPrompt,
+                        onDismissBlockedPrompt = { blockedPrompt = null }
+                    )
                 }
             }
         }
     }
-}
 
-@Composable
-private fun AppRoot(container: com.adhdcompanion.focus.di.AppContainer) {
-    AppNavigation(container = container)
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+
+        val blockedPkg = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE)
+        if (!blockedPkg.isNullOrBlank()) {
+            val appName = intent.getStringExtra(EXTRA_BLOCKED_APP_NAME) ?: blockedPkg
+            val reason = intent.getStringExtra(EXTRA_LOCK_BLOCKED_REASON) ?: ""
+            blockedPrompt = BlockedRedirectPrompt(
+                packageName = blockedPkg,
+                appLabel = appName,
+                reason = reason
+            )
+            intent.removeExtra(EXTRA_BLOCKED_PACKAGE)
+        }
+
+        if (intent.getBooleanExtra(EXTRA_OPEN_FOCUS_LOCK, false)) {
+            navigateToFocusLockTriggerId++
+            intent.removeExtra(EXTRA_OPEN_FOCUS_LOCK)
+        }
+
+        if (intent.getBooleanExtra(EXTRA_AUTO_SPEAK, false)) {
+            AlarmSoundPlayer.stop()
+            NotificationHelper.cancelAlarmNotification(this)
+            navigateToNowTriggerId++
+            autoSpeakTriggerId++
+            intent.removeExtra(EXTRA_AUTO_SPEAK)
+        }
+    }
+
+    companion object {
+        const val EXTRA_AUTO_SPEAK = "extra_auto_speak"
+        const val EXTRA_ALARM_LABEL = "extra_alarm_label"
+        const val EXTRA_OPEN_FOCUS_LOCK = "extra_open_focus_lock"
+        const val EXTRA_BLOCKED_PACKAGE = "extra_blocked_package"
+        const val EXTRA_BLOCKED_APP_NAME = "extra_blocked_app_name"
+        const val EXTRA_LOCK_BLOCKED_REASON = "extra_lock_blocked_reason"
+    }
 }

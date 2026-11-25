@@ -1,5 +1,6 @@
 package com.adhdcompanion.focus.ui.viewmodel
 
+import android.app.Application
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.adhdcompanion.focus.di.AppContainer
@@ -19,11 +20,19 @@ object ViewModelFactories {
         initializer { StuckViewModel(container) }
     }
 
+    fun doubtSolver(container: AppContainer) = viewModelFactory {
+        initializer { DoubtSolverViewModel(container) }
+    }
+
     fun planner(container: AppContainer) = viewModelFactory {
         initializer { PlannerViewModel(container) }
     }
 
     fun brainDump(container: AppContainer) = viewModelFactory {
         initializer { BrainDumpViewModel(container) }
+    }
+
+    fun focusLock(application: Application, container: AppContainer) = viewModelFactory {
+        initializer { FocusLockViewModel(application, container) }
     }
 }

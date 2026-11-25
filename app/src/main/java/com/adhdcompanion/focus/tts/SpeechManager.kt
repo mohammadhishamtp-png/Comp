@@ -3,6 +3,8 @@ package com.adhdcompanion.focus.tts
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.util.Base64
 import android.util.Log
@@ -22,6 +24,7 @@ import java.util.Locale
  * key is set; if that fails for ANY reason (offline, quota, bad key, model
  * not yet available) it falls back to the built-in Android TextToSpeech
  * engine automatically and silently, so the briefing always speaks.
+ * Queues speech automatically if Android TTS is still warming up on cold start.
  */
 class SpeechManager(
     private val context: Context,
@@ -30,7 +33,10 @@ class SpeechManager(
 ) {
     private var androidTts: TextToSpeech? = null
     private var androidTtsReady = false
+    private var pendingText: String? = null
+    private var pendingOnDone: (() -> Unit)? = null
     private var mediaPlayer: MediaPlayer? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(Dispatchers.Main)
 
     init {
@@ -39,6 +45,17 @@ class SpeechManager(
             if (androidTtsReady) {
                 androidTts?.language = Locale.getDefault()
                 androidTts?.setSpeechRate(0.98f)
+                val queuedText = pendingText
+                val queuedDone = pendingOnDone
+                pendingText = null
+                pendingOnDone = null
+                if (!queuedText.isNullOrBlank()) {
+                    speakWithAndroidTts(queuedText, queuedDone)
+                }
+            } else {
+                pendingText = null
+                pendingOnDone?.invoke()
+                pendingOnDone = null
             }
         }
     }
@@ -69,17 +86,19 @@ class SpeechManager(
 
     private fun speakWithAndroidTts(text: String, onDone: (() -> Unit)?) {
         val tts = androidTts
-        if (tts == null || !androidTtsReady) {
+        if (tts == null) {
             onDone?.invoke()
             return
         }
+        if (!androidTtsReady) {
+            pendingText = text
+            pendingOnDone = onDone
+            return
+        }
         tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "briefing_utterance")
-        // Android's TTS listener callback requires API 21+ UtteranceProgressListener;
-        // for simplicity and reliability we just invoke onDone after a short delay
-        // proportional to text length so the UI doesn't hang indefinitely.
         if (onDone != null) {
-            val estimatedMs = (text.length * 55L).coerceIn(800L, 15000L)
-            android.os.Handler(context.mainLooper).postDelayed({ onDone() }, estimatedMs)
+            val estimatedMs = (text.length * 55L).coerceIn(800L, 18000L)
+            mainHandler.postDelayed({ onDone() }, estimatedMs)
         }
     }
 
@@ -88,8 +107,6 @@ class SpeechManager(
             val decoded = Base64.decode(base64Data, Base64.DEFAULT)
             val lowerMime = mimeType.lowercase(Locale.US)
 
-            // Gemini TTS returns raw 16-bit mono PCM (e.g. "audio/L16;codec=pcm;rate=24000"),
-            // which MediaPlayer can't play without a container. Wrap it in a WAV header.
             val isRawPcm = lowerMime.contains("l16") || lowerMime.contains("pcm")
             val bytes: ByteArray
             val extension: String
@@ -132,13 +149,11 @@ class SpeechManager(
         }
     }
 
-    /** Parses `rate=24000` out of a MIME type string; defaults to 24000 Hz. */
     private fun parseSampleRate(mimeType: String): Int {
         val match = Regex("rate=(\\d+)").find(mimeType)
         return match?.groupValues?.get(1)?.toIntOrNull() ?: 24000
     }
 
-    /** Prepends a 44-byte RIFF/WAVE header to raw 16-bit little-endian mono PCM. */
     private fun pcm16MonoToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
         val channels = 1
         val bitsPerSample = 16
@@ -150,8 +165,8 @@ class SpeechManager(
             putInt(36 + dataLen)
             put("WAVE".toByteArray(Charsets.US_ASCII))
             put("fmt ".toByteArray(Charsets.US_ASCII))
-            putInt(16)                    // PCM fmt chunk size
-            putShort(1)                   // audio format: PCM
+            putInt(16)
+            putShort(1)
             putShort(channels.toShort())
             putInt(sampleRate)
             putInt(byteRate)
@@ -164,6 +179,9 @@ class SpeechManager(
     }
 
     fun stop() {
+        pendingText = null
+        pendingOnDone = null
+        mainHandler.removeCallbacksAndMessages(null)
         androidTts?.stop()
         mediaPlayer?.let {
             runCatching { it.stop() }

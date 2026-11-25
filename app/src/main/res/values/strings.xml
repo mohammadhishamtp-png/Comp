@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Focus Companion</string>
+    <string name="accessibility_service_label">Focus Companion App Blocker</string>
+    <string name="accessibility_service_description">Detects when a blocked distracting app opens during your scheduled focus lock windows and gently redirects you back to Focus Companion. Also guards Focus Companion\'s own lock rules and App Info during active sessions.</string>
 </resources>

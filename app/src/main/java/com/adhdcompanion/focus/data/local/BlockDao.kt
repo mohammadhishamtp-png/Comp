@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
@@ -30,4 +31,10 @@ interface BlockDao {
 
     @Query("DELETE FROM day_blocks WHERE dayEpoch = :dayEpoch")
     suspend fun clearDay(dayEpoch: Long)
+
+    @Transaction
+    suspend fun replaceDay(dayEpoch: Long, blocks: List<BlockEntity>) {
+        clearDay(dayEpoch)
+        insertAll(blocks)
+    }
 }

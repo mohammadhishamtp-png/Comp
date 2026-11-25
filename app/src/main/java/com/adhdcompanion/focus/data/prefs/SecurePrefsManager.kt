@@ -38,8 +38,17 @@ class SecurePrefsManager(context: Context) {
 
     /** 24h local time, e.g. "07:30", for the daily wake/transition briefing alarm. */
     var morningBriefingTime: String?
-        get() = prefs.getString(KEY_MORNING_TIME, null)
+        get() = prefs.getString(KEY_MORNING_TIME, "07:30")
         set(value) = prefs.edit().putString(KEY_MORNING_TIME, value).apply()
+
+    var morningAlarmEnabled: Boolean
+        get() {
+            if (!prefs.contains(KEY_MORNING_ALARM_ENABLED)) {
+                return !prefs.getString(KEY_MORNING_TIME, null).isNullOrBlank()
+            }
+            return prefs.getBoolean(KEY_MORNING_ALARM_ENABLED, false)
+        }
+        set(value) = prefs.edit().putBoolean(KEY_MORNING_ALARM_ENABLED, value).apply()
 
     var voicePreference: String
         get() = prefs.getString(KEY_VOICE_PREF, VOICE_GEMINI_WITH_FALLBACK) ?: VOICE_GEMINI_WITH_FALLBACK
@@ -52,6 +61,7 @@ class SecurePrefsManager(context: Context) {
         private const val KEY_USE_FALLBACK_MODEL = "use_fallback_model"
         private const val KEY_USER_NAME = "user_display_name"
         private const val KEY_MORNING_TIME = "morning_briefing_time"
+        private const val KEY_MORNING_ALARM_ENABLED = "morning_alarm_enabled"
         private const val KEY_VOICE_PREF = "voice_preference"
 
         const val VOICE_GEMINI_WITH_FALLBACK = "gemini_with_fallback"

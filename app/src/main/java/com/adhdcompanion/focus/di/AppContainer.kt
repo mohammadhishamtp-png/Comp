@@ -1,6 +1,7 @@
 package com.adhdcompanion.focus.di
 
 import android.content.Context
+import com.adhdcompanion.focus.blocker.FocusLockManager
 import com.adhdcompanion.focus.data.local.AppDatabase
 import com.adhdcompanion.focus.data.prefs.SecurePrefsManager
 import com.adhdcompanion.focus.data.remote.GeminiRepository
@@ -17,12 +18,14 @@ import com.adhdcompanion.focus.tts.SpeechManager
  */
 class AppContainer(context: Context) {
 
-    val prefs: SecurePrefsManager by lazy { SecurePrefsManager(context) }
+    private val appContext = context.applicationContext
 
-    private val database: AppDatabase by lazy { AppDatabase.getInstance(context) }
+    val prefs: SecurePrefsManager by lazy { SecurePrefsManager(appContext) }
 
-    // Swap NoOpCloudSync() for a real CloudSyncInterface implementation
-    // (e.g. RestCloudSync or a Firestore-backed one) to enable cloud sync.
+    val focusLockManager: FocusLockManager by lazy { FocusLockManager.getInstance(appContext) }
+
+    private val database: AppDatabase by lazy { AppDatabase.getInstance(appContext) }
+
     private val cloudSync = NoOpCloudSync()
 
     val blockRepository: BlockRepository by lazy {
@@ -38,10 +41,10 @@ class AppContainer(context: Context) {
     }
 
     val speechManager: SpeechManager by lazy {
-        SpeechManager(context, geminiRepository, prefs)
+        SpeechManager(appContext, geminiRepository, prefs)
     }
 
     val speechRecognitionManager: SpeechRecognitionManager by lazy {
-        SpeechRecognitionManager(context)
+        SpeechRecognitionManager(appContext)
     }
 }
