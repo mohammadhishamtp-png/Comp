@@ -1,0 +1,655 @@
+package com.adhdcompanion.focus.ui.screens
+
+import android.app.Application
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimeInput
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberTimePickerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.adhdcompanion.focus.blocker.FocusBlockerAccessibilityService
+import com.adhdcompanion.focus.blocker.FocusLockManager
+import com.adhdcompanion.focus.di.AppContainer
+import com.adhdcompanion.focus.model.FocusLockWindow
+import com.adhdcompanion.focus.model.LockMode
+import com.adhdcompanion.focus.ui.components.SectionLabel
+import com.adhdcompanion.focus.ui.viewmodel.FocusLockViewModel
+import com.adhdcompanion.focus.ui.viewmodel.ViewModelFactories
+import java.util.Locale
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun FocusLockScreen(
+    container: AppContainer,
+    onBack: () -> Unit
+) {
+    BackHandler { onBack() }
+
+    val context = LocalContext.current
+    val app = context.applicationContext as Application
+    val viewModel = viewModel<FocusLockViewModel>(factory = ViewModelFactories.focusLock(app, container))
+    val state by viewModel.uiState.collectAsState()
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshAccessibilityStatus()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val eval = state.evaluation
+    val isRuleEditingAllowed = !state.config.isMasterEnabled || !eval.isInScheduledWindow || eval.isTemporaryUnlocked
+
+    var editingWindow by remember { mutableStateOf<FocusLockWindow?>(null) }
+    var showWindowDialog by remember { mutableStateOf(false) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        TopAppBar(
+            title = { Text("App Blocker & Lock") },
+            navigationIcon = {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+            }
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp)
+        ) {
+            // 1. Accessibility Service status & setup guide
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (state.isAccessibilityEnabled)
+                        MaterialTheme.colorScheme.primaryContainer
+                    else
+                        MaterialTheme.colorScheme.errorContainer
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            if (state.isAccessibilityEnabled) Icons.Filled.CheckCircle else Icons.Filled.Warning,
+                            contentDescription = null,
+                            tint = if (state.isAccessibilityEnabled)
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            else
+                                MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = if (state.isAccessibilityEnabled)
+                                "Accessibility Blocker Active"
+                            else
+                                "Accessibility Permission Needed",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (state.isAccessibilityEnabled)
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            else
+                                MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = if (state.isAccessibilityEnabled) {
+                            "Foreground app switches and mid-session App Info/uninstall attempts are monitored during scheduled lock windows."
+                        } else {
+                            "Setup steps:\n1. Tap 'Open Accessibility Settings' below.\n2. Find 'Focus Companion App Blocker' under Downloaded apps.\n3. Toggle it ON and return here."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (state.isAccessibilityEnabled)
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        else
+                            MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { FocusBlockerAccessibilityService.openAccessibilitySettings(context) },
+                        modifier = Modifier.testTag("open_accessibility_settings_button")
+                    ) {
+                        Icon(Icons.Filled.Security, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Open Accessibility Settings")
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // 2. Anti-Impulse Lock Guard / Cooldown Banner when in an active window
+            if (state.config.isMasterEnabled && eval.isInScheduledWindow) {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (eval.isTemporaryUnlocked)
+                            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f)
+                        else
+                            MaterialTheme.colorScheme.primary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(18.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                if (eval.isTemporaryUnlocked) Icons.Filled.LockOpen else Icons.Filled.Lock,
+                                contentDescription = null,
+                                tint = if (eval.isTemporaryUnlocked) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = when {
+                                    eval.isTemporaryUnlocked -> "Temporary Edit Window Open"
+                                    eval.isCooldownRunning -> "Anti-Impulse Cooldown Running"
+                                    else -> "Lock Window Active: ${eval.activeWindow?.name ?: "Focus"}"
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (eval.isTemporaryUnlocked) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onPrimary
+                            )
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+
+                        when {
+                            eval.isTemporaryUnlocked -> {
+                                val mins = eval.tempUnlockRemainingSeconds / 60
+                                val secs = eval.tempUnlockRemainingSeconds % 60
+                                Text(
+                                    "You can adjust or disable lock rules for %d:%02d before blocking re-arms automatically."
+                                        .format(Locale.getDefault(), mins, secs),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Spacer(Modifier.height(10.dp))
+                                Button(
+                                    onClick = viewModel::relockNow,
+                                    modifier = Modifier.testTag("relock_now_button")
+                                ) {
+                                    Text("Re-lock immediately")
+                                }
+                            }
+
+                            eval.isCooldownRunning -> {
+                                val mins = eval.cooldownRemainingSeconds / 60
+                                val secs = eval.cooldownRemainingSeconds % 60
+                                Text(
+                                    "Blocking stays fully active during this countdown. Rules unlock for editing in:",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f)
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "%02d:%02d".format(Locale.getDefault(), mins, secs),
+                                    style = MaterialTheme.typography.displaySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(Modifier.height(10.dp))
+                                OutlinedButton(
+                                    onClick = viewModel::cancelUnlockCooldown,
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    modifier = Modifier.testTag("cancel_cooldown_button")
+                                ) {
+                                    Text("Cancel unlock request")
+                                }
+                            }
+
+                            else -> {
+                                val endText = eval.activeWindow?.let {
+                                    FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay)
+                                } ?: ""
+                                Text(
+                                    "Active until $endText. Editing or disabling lock rules mid-session requires a strict ${state.config.cooldownMinutes}-minute cooldown (blocking stays active during the countdown).",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f)
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                Button(
+                                    onClick = viewModel::startUnlockCooldown,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.onPrimary,
+                                        contentColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    modifier = Modifier.testTag("start_cooldown_button")
+                                ) {
+                                    Icon(Icons.Filled.Timer, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Start ${state.config.cooldownMinutes}-min unlock cooldown")
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+
+            state.feedbackMessage?.let { msg ->
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(msg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        TextButton(onClick = viewModel::clearFeedback) { Text("OK") }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+            }
+
+            // 3. Master Enable Switch
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Enable scheduled app blocker", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Automatically locks selected apps during your focus windows and re-evaluates after reboot.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = state.config.isMasterEnabled,
+                    onCheckedChange = viewModel::setMasterEnabled,
+                    enabled = isRuleEditingAllowed,
+                    modifier = Modifier.testTag("master_lock_switch")
+                )
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            // 4. Scheduled Focus Windows
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SectionLabel("Scheduled lock windows")
+                OutlinedButton(
+                    onClick = {
+                        editingWindow = null
+                        showWindowDialog = true
+                    },
+                    enabled = isRuleEditingAllowed,
+                    modifier = Modifier.testTag("add_lock_window_button")
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Add window")
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            state.config.windows.forEach { window ->
+                FocusWindowCard(
+                    window = window,
+                    editingAllowed = isRuleEditingAllowed,
+                    onToggle = { enabled -> viewModel.toggleWindowEnabled(window.id, enabled) },
+                    onEdit = {
+                        editingWindow = window
+                        showWindowDialog = true
+                    },
+                    onDelete = { viewModel.deleteWindow(window.id) }
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // 5. Cooldown duration selector (10–15 min)
+            SectionLabel("Anti-impulse edit cooldown")
+            Text(
+                "Cooldown required before lock rules can be edited or disabled mid-session: ${state.config.cooldownMinutes} minutes",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Slider(
+                value = state.config.cooldownMinutes.toFloat(),
+                onValueChange = { viewModel.setCooldownMinutes(it.toInt()) },
+                valueRange = 10f..15f,
+                steps = 4,
+                enabled = isRuleEditingAllowed,
+                modifier = Modifier.testTag("cooldown_slider")
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            // 6. Mode: Block chosen apps vs Allow only chosen apps
+            SectionLabel("Blocking mode")
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(
+                    onClick = { if (isRuleEditingAllowed) viewModel.setLockMode(LockMode.BLOCK_LIST) },
+                    enabled = isRuleEditingAllowed,
+                    label = { Text("Block chosen apps") },
+                    colors = if (state.config.mode == LockMode.BLOCK_LIST) {
+                        AssistChipDefaults.assistChipColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            labelColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    } else AssistChipDefaults.assistChipColors()
+                )
+                AssistChip(
+                    onClick = { if (isRuleEditingAllowed) viewModel.setLockMode(LockMode.ALLOW_LIST) },
+                    enabled = isRuleEditingAllowed,
+                    label = { Text("Allow only chosen apps") },
+                    colors = if (state.config.mode == LockMode.ALLOW_LIST) {
+                        AssistChipDefaults.assistChipColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            labelColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    } else AssistChipDefaults.assistChipColors()
+                )
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            // 7. Installed apps picker
+            SectionLabel(
+                if (state.config.mode == LockMode.BLOCK_LIST)
+                    "Distracting apps to block (${state.config.selectedPackages.size} selected)"
+                else
+                    "Allowed apps to permit (${state.config.selectedPackages.size} selected)"
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = state.appSearchQuery,
+                onValueChange = viewModel::updateAppSearchQuery,
+                label = { Text("Search installed apps") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(10.dp))
+
+            if (state.isLoadingApps) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Loading installed apps…", style = MaterialTheme.typography.bodyMedium)
+                }
+            } else {
+                val query = state.appSearchQuery.trim().lowercase(Locale.getDefault())
+                val filteredApps = state.installedApps.filter {
+                    query.isBlank() ||
+                        it.label.lowercase(Locale.getDefault()).contains(query) ||
+                        it.packageName.lowercase(Locale.getDefault()).contains(query)
+                }.sortedByDescending { it.packageName in state.config.selectedPackages }
+
+                if (filteredApps.isEmpty()) {
+                    Text(
+                        "No matching launchable apps found.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    filteredApps.forEach { appInfo ->
+                        val checked = appInfo.packageName in state.config.selectedPackages
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = isRuleEditingAllowed) {
+                                    viewModel.togglePackageSelection(appInfo.packageName)
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = { viewModel.togglePackageSelection(appInfo.packageName) },
+                                enabled = isRuleEditingAllowed
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(appInfo.label, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    appInfo.packageName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    "Android security note: Standard Android cannot permanently block Safe Mode, ADB, or factory resets without enterprise Device Owner controls. Within normal use, active lock windows guard app switches, App Info, uninstall, and lock settings with a mandatory cooldown.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(14.dp)
+                )
+            }
+            Spacer(Modifier.height(32.dp))
+        }
+    }
+
+    if (showWindowDialog) {
+        FocusWindowEditorDialog(
+            initial = editingWindow,
+            onDismiss = { showWindowDialog = false },
+            onSave = { name, startMin, endMin, days ->
+                viewModel.saveWindow(
+                    existingId = editingWindow?.id,
+                    name = name,
+                    startMinuteOfDay = startMin,
+                    endMinuteOfDay = endMin,
+                    activeDays = days
+                )
+                showWindowDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun FocusWindowCard(
+    window: FocusLockWindow,
+    editingAllowed: Boolean,
+    onToggle: (Boolean) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val dayNames = listOf(1 to "Mon", 2 to "Tue", 3 to "Wed", 4 to "Thu", 5 to "Fri", 6 to "Sat", 7 to "Sun")
+    val activeDayText = dayNames.filter { it.first in window.activeDays }.joinToString(", ") { it.second }
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(window.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "${FocusLockManager.formatMinuteOfDay(window.startMinuteOfDay)} – ${FocusLockManager.formatMinuteOfDay(window.endMinuteOfDay)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    activeDayText.ifBlank { "No days selected" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(onClick = onEdit, enabled = editingAllowed) {
+                Icon(Icons.Filled.Edit, contentDescription = "Edit window")
+            }
+            IconButton(onClick = onDelete, enabled = editingAllowed) {
+                Icon(Icons.Filled.Delete, contentDescription = "Delete window")
+            }
+            Switch(
+                checked = window.isEnabled,
+                onCheckedChange = onToggle,
+                enabled = editingAllowed
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun FocusWindowEditorDialog(
+    initial: FocusLockWindow?,
+    onDismiss: () -> Unit,
+    onSave: (name: String, startMinute: Int, endMinute: Int, days: Set<Int>) -> Unit
+) {
+    var name by remember { mutableStateOf(initial?.name ?: "Study Focus Window") }
+    var startHour by remember { mutableIntStateOf((initial?.startMinuteOfDay ?: 9 * 60) / 60) }
+    var startMin by remember { mutableIntStateOf((initial?.startMinuteOfDay ?: 9 * 60) % 60) }
+    var endHour by remember { mutableIntStateOf((initial?.endMinuteOfDay ?: 12 * 60) / 60) }
+    var endMin by remember { mutableIntStateOf((initial?.endMinuteOfDay ?: 12 * 60) % 60) }
+    var selectedDays by remember { mutableStateOf(initial?.activeDays ?: setOf(1, 2, 3, 4, 5)) }
+
+    val startPicker = rememberTimePickerState(initialHour = startHour, initialMinute = startMin, is24Hour = false)
+    val endPicker = rememberTimePickerState(initialHour = endHour, initialMinute = endMin, is24Hour = false)
+
+    val dayChips = listOf(1 to "M", 2 to "T", 3 to "W", 4 to "T", 5 to "F", 6 to "S", 7 to "S")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initial == null) "Add focus window" else "Edit focus window") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Window label") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("Start time", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(4.dp))
+                TimeInput(state = startPicker)
+
+                Spacer(Modifier.height(8.dp))
+                Text("End time", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(4.dp))
+                TimeInput(state = endPicker)
+
+                Spacer(Modifier.height(10.dp))
+                Text("Active days", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(6.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    dayChips.forEach { (dow, label) ->
+                        val active = dow in selectedDays
+                        FilterChip(
+                            selected = active,
+                            onClick = {
+                                selectedDays = if (active) selectedDays - dow else selectedDays + dow
+                            },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val sMin = startPicker.hour * 60 + startPicker.minute
+                    val eMin = endPicker.hour * 60 + endPicker.minute
+                    onSave(name, sMin, eMin, selectedDays)
+                }
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}

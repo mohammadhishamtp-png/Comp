@@ -56,3 +56,100 @@ data class UnblockerResponse(
     val whyReminder: String,
     val microSteps: List<MicroStep>
 )
+
+/**
+ * Structured low-friction explanation returned by the Doubt Solver.
+ */
+data class DoubtSolution(
+    val coreIntuition: String,
+    val stepByStep: List<String>,
+    val twoMinuteMicroStep: String
+)
+
+/**
+ * Whether the blocker blocks chosen distracting apps or permits only chosen allowed apps.
+ */
+enum class LockMode {
+    BLOCK_LIST,
+    ALLOW_LIST
+}
+
+/**
+ * A scheduled focus lock window.
+ * activeDays uses ISO DayOfWeek values: 1 (Monday) .. 7 (Sunday).
+ */
+data class FocusLockWindow(
+    val id: String,
+    val name: String,
+    val startMinuteOfDay: Int,
+    val endMinuteOfDay: Int,
+    val activeDays: Set<Int> = setOf(1, 2, 3, 4, 5),
+    val isEnabled: Boolean = true
+)
+
+data class FocusLockConfig(
+    val isMasterEnabled: Boolean = false,
+    val mode: LockMode = LockMode.BLOCK_LIST,
+    val selectedPackages: Set<String> = emptySet(),
+    val windows: List<FocusLockWindow> = listOf(
+        FocusLockWindow(
+            id = "default_study_window",
+            name = "Deep Study Focus",
+            startMinuteOfDay = 9 * 60,
+            endMinuteOfDay = 12 * 60,
+            activeDays = setOf(1, 2, 3, 4, 5),
+            isEnabled = true
+        )
+    ),
+    val cooldownMinutes: Int = 10,
+    val unlockCooldownEndMillis: Long = 0L,
+    val temporaryUnlockUntilMillis: Long = 0L
+)
+
+data class InstalledAppInfo(
+    val packageName: String,
+    val label: String
+)
+
+data class LockEvaluationState(
+    val isInScheduledWindow: Boolean = false,
+    val isBlockingActive: Boolean = false,
+    val activeWindow: FocusLockWindow? = null,
+    val isCooldownRunning: Boolean = false,
+    val cooldownRemainingSeconds: Int = 0,
+    val isTemporaryUnlocked: Boolean = false,
+    val tempUnlockRemainingSeconds: Int = 0
+)
+
+data class BlockedAppEvent(
+    val dayEpoch: Long,
+    val packageName: String,
+    val appLabel: String,
+    val timestampMillis: Long
+)
+
+data class DailyFocusStat(
+    val dayEpoch: Long,
+    val dayLabel: String,
+    val dateLabel: String,
+    val focusedMinutes: Int,
+    val completedBlocks: Int,
+    val blockedAttempts: Int,
+    val isToday: Boolean
+)
+
+data class BlockedAppSummary(
+    val packageName: String,
+    val appLabel: String,
+    val attemptCount: Int
+)
+
+data class WeeklyDashboardStats(
+    val dailyStats: List<DailyFocusStat> = emptyList(),
+    val topBlockedApps: List<BlockedAppSummary> = emptyList(),
+    val currentStreakDays: Int = 0,
+    val bestStreakDays: Int = 0,
+    val totalWeeklyFocusMinutes: Int = 0,
+    val totalWeeklyCompletedBlocks: Int = 0,
+    val totalWeeklyBlockedAttempts: Int = 0
+)

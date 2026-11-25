@@ -3,23 +3,27 @@ package com.adhdcompanion.focus.data.remote
 import com.adhdcompanion.focus.data.prefs.SecurePrefsManager
 import com.adhdcompanion.focus.model.BlockCategory
 import com.adhdcompanion.focus.model.DayBlock
+import com.adhdcompanion.focus.model.DoubtSolution
+import com.adhdcompanion.focus.model.EnergyLevel
 import com.adhdcompanion.focus.model.MicroStep
 import com.adhdcompanion.focus.model.PlannerInput
 import com.adhdcompanion.focus.model.UnblockerResponse
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.HttpException
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 
 /**
- * The AI Planner & Supporter. Every prompt sent from here carries the same
- * baked-in tone rules: warm, calm, peer-like, zero guilt-tripping, never an
- * overwhelming list, always one concrete low-friction physical action first.
+ * The AI Planner, Doubt Solver & Supporter. Every prompt sent from here carries
+ * the same baked-in tone rules: warm, calm, peer-like, zero guilt-tripping,
+ * never an overwhelming list, always one concrete low-friction physical action first.
  */
 class GeminiRepository(private val prefs: SecurePrefsManager) {
 
@@ -43,9 +47,9 @@ class GeminiRepository(private val prefs: SecurePrefsManager) {
             .create(GeminiApiService::class.java)
     }
 
-    private val primaryModel = "gemini-4-hydrogen"
-    private val fallbackModel = "gemini-3.5-flash-lite"
-    private val ttsModel = "gemini-3.8-flash-tts"
+    private val primaryModel = "gemini-2.5-flash"
+    private val fallbackModel = "gemini-2.5-flash-lite"
+    private val ttsModel = "gemini-2.5-flash-preview-tts"
 
     private fun activeTextModel(): String =
         if (prefs.useFlashLiteFallbackModel) fallbackModel else primaryModel
@@ -60,7 +64,7 @@ Rules you always follow, no exceptions:
 - Always give exactly one concrete, tiny, physical first action before anything else.
 - Keep language short, plain, conversational — like a supportive friend texting, not a coach.
 - Assume the person is smart and capable; they are stuck, not broken.
-- Keep every response strictly in the JSON schema you are given. No prose outside the JSON.
+- Keep every response strictly in the JSON schema you are given. No prose or markdown fences outside the JSON.
 """
     }
 
@@ -162,6 +166,50 @@ Respond ONLY with JSON matching this schema:
     }
 
     // ---------------------------------------------------------------
+    // Doubt Solver
+    // ---------------------------------------------------------------
+
+    private data class DoubtDto(
+        @SerializedName("core_intuition") val coreIntuition: String,
+        @SerializedName("step_by_step") val stepByStep: List<String>,
+        @SerializedName("two_minute_micro_step") val twoMinuteMicroStep: String
+    )
+
+    suspend fun solveDoubt(
+        doubt: String,
+        subject: String? = null,
+        energyLevel: EnergyLevel? = null
+    ): Result<DoubtSolution> = withContext(Dispatchers.IO) {
+        runCatching {
+            val apiKey = requireApiKey()
+            val subjectLine = subject?.takeIf { it.isNotBlank() }?.let { "Subject/Topic: $it\n" } ?: ""
+            val energyLine = energyLevel?.let { "Current user energy: $it\n" } ?: ""
+            val prompt = """
+The user has a study or concept doubt and wants a clear, low-friction breakdown
+that won't overwhelm their working memory.
+
+$subjectLine$energyLine
+Doubt / Question:
+"$doubt"
+
+Rules:
+- core_intuition: Explain the underlying intuition or concept in 2-4 plain-language sentences. Use a concrete mental picture or everyday analogy when helpful.
+- step_by_step: Break the solution or reasoning into 3-6 crisp, sequential steps. One clear idea per step, no walls of text.
+- two_minute_micro_step: Give one tiny, concrete 2-minute practice action they can do right now to lock it in (e.g. "Write down the formula once from memory and plug in x = 2").
+
+Respond ONLY with JSON matching this schema:
+{"core_intuition": string, "step_by_step": [string], "two_minute_micro_step": string}
+"""
+            val dto = callJson<DoubtDto>(prompt, apiKey)
+            DoubtSolution(
+                coreIntuition = dto.coreIntuition.trim(),
+                stepByStep = dto.stepByStep.map { it.trim() }.filter { it.isNotBlank() },
+                twoMinuteMicroStep = dto.twoMinuteMicroStep.trim()
+            )
+        }
+    }
+
+    // ---------------------------------------------------------------
     // Spoken briefing script (text only; SpeechManager handles audio)
     // ---------------------------------------------------------------
 
@@ -201,26 +249,74 @@ Respond ONLY with JSON matching this schema:
             contents = listOf(GeminiContent(role = "user", parts = listOf(GeminiPart(text = prompt)))),
             systemInstruction = GeminiContent(parts = listOf(GeminiPart(text = SYSTEM_PERSONA))),
             generationConfig = GeminiGenerationConfig(
-                temperature = 0.8,
-                maxOutputTokens = 1024,
+                temperature = 0.7,
+                maxOutputTokens = 2048,
                 responseMimeType = "application/json"
             )
         )
         val model = activeTextModel()
         val response = try {
-            api.generateContent(model, apiKey, request)
+            generateWithRetry(model, apiKey, request)
         } catch (primaryFailure: Exception) {
-            // Automatic fallback to the lighter model if the primary one fails
-            // (unavailable, rate-limited, or not yet enabled on the key).
             if (model != fallbackModel) {
-                api.generateContent(fallbackModel, apiKey, request)
+                generateWithRetry(fallbackModel, apiKey, request)
             } else {
                 throw primaryFailure
             }
         }
-        val text = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+        val rawText = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
             ?: throw IllegalStateException("Gemini returned no content")
-        return gson.fromJson(text, T::class.java)
+        val cleanedJson = stripMarkdownFences(rawText)
+        return gson.fromJson(cleanedJson, T::class.java)
+            ?: throw IllegalStateException("Could not parse Gemini JSON response")
+    }
+
+    /**
+     * Strips markdown code fences (```json ... ``` or ``` ... ```) and trims
+     * stray prose outside the outermost JSON object if present.
+     */
+    internal fun stripMarkdownFences(raw: String): String {
+        var text = raw.trim()
+        val fenceRegex = Regex("^```(?:json)?\\s*([\\s\\S]*?)\\s*```$", RegexOption.IGNORE_CASE)
+        val match = fenceRegex.find(text)
+        if (match != null) {
+            text = match.groupValues[1].trim()
+        } else {
+            text = text
+                .removePrefix("```json")
+                .removePrefix("```JSON")
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
+        }
+        val firstBrace = text.indexOf('{')
+        val lastBrace = text.lastIndexOf('}')
+        if (firstBrace != -1 && lastBrace > firstBrace) {
+            text = text.substring(firstBrace, lastBrace + 1)
+        }
+        return text
+    }
+
+    /**
+     * Retries temporary Gemini failures (503 overloaded, 429 rate limit, 500)
+     * a few times with a short backoff before giving up.
+     */
+    private suspend fun generateWithRetry(
+        model: String,
+        apiKey: String,
+        request: GeminiRequest
+    ): GeminiResponse {
+        var attempt = 0
+        while (true) {
+            try {
+                return api.generateContent(model, apiKey, request)
+            } catch (e: HttpException) {
+                val retryable = e.code() == 503 || e.code() == 429 || e.code() == 500
+                if (!retryable || attempt >= 3) throw e
+                delay(1500L * (attempt + 1))
+                attempt++
+            }
+        }
     }
 
     private fun requireApiKey(): String {
@@ -239,7 +335,17 @@ Respond ONLY with JSON matching this schema:
         val key = prefs.geminiApiKey ?: return@withContext null
         runCatching {
             val request = GeminiRequest(
-                contents = listOf(GeminiContent(role = "user", parts = listOf(GeminiPart(text = text))))
+                contents = listOf(GeminiContent(role = "user", parts = listOf(GeminiPart(text = text)))),
+                generationConfig = GeminiGenerationConfig(
+                    temperature = null,
+                    maxOutputTokens = null,
+                    responseModalities = listOf("AUDIO"),
+                    speechConfig = GeminiSpeechConfig(
+                        voiceConfig = GeminiVoiceConfig(
+                            prebuiltVoiceConfig = GeminiPrebuiltVoiceConfig(voiceName = "Kore")
+                        )
+                    )
+                )
             )
             val response = api.generateSpeech(ttsModel, key, request)
             response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.inlineData

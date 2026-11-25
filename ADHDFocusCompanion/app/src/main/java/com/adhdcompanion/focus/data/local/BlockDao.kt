@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
@@ -30,4 +31,16 @@ interface BlockDao {
 
     @Query("DELETE FROM day_blocks WHERE dayEpoch = :dayEpoch")
     suspend fun clearDay(dayEpoch: Long)
+
+    @Query("SELECT * FROM day_blocks WHERE dayEpoch BETWEEN :startEpoch AND :endEpoch ORDER BY dayEpoch ASC, startMinuteOfDay ASC")
+    fun observeBlocksInRange(startEpoch: Long, endEpoch: Long): Flow<List<BlockEntity>>
+
+    @Query("SELECT * FROM day_blocks WHERE dayEpoch <= :todayEpoch AND isCompleted = 1 ORDER BY dayEpoch DESC")
+    fun observeAllCompletedBlocks(todayEpoch: Long): Flow<List<BlockEntity>>
+
+    @Transaction
+    suspend fun replaceDay(dayEpoch: Long, blocks: List<BlockEntity>) {
+        clearDay(dayEpoch)
+        insertAll(blocks)
+    }
 }

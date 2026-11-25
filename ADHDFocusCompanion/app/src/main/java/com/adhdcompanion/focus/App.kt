@@ -12,5 +12,6 @@ class App : Application() {
         super.onCreate()
         container = AppContainer(this)
         NotificationHelper.ensureChannel(this)
+        container.focusLockManager.evaluateAndSyncState(this)
     }
 }

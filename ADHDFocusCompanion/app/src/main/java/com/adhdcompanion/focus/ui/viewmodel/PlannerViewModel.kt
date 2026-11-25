@@ -3,6 +3,7 @@ package com.adhdcompanion.focus.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.adhdcompanion.focus.di.AppContainer
+import com.adhdcompanion.focus.model.BlockCategory
 import com.adhdcompanion.focus.model.DayBlock
 import com.adhdcompanion.focus.model.EnergyLevel
 import com.adhdcompanion.focus.model.PlannerInput
@@ -18,6 +19,7 @@ data class PlannerUiState(
     val energyLevel: EnergyLevel = EnergyLevel.MEDIUM,
     val goalsAndBlocks: String = "",
     val isGenerating: Boolean = false,
+    val statusMessage: String? = null,
     val errorMessage: String? = null
 )
 
@@ -31,7 +33,7 @@ class PlannerViewModel(private val container: AppContainer) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun updateHours(value: String) {
-        _uiState.value = _uiState.value.copy(availableHours = value)
+        _uiState.value = _uiState.value.copy(availableHours = value, errorMessage = null)
     }
 
     fun updateEnergy(value: EnergyLevel) {
@@ -39,7 +41,11 @@ class PlannerViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     fun updateGoals(value: String) {
-        _uiState.value = _uiState.value.copy(goalsAndBlocks = value)
+        _uiState.value = _uiState.value.copy(goalsAndBlocks = value, errorMessage = null)
+    }
+
+    fun clearStatus() {
+        _uiState.value = _uiState.value.copy(statusMessage = null, errorMessage = null)
     }
 
     fun generatePlan() {
@@ -54,7 +60,7 @@ class PlannerViewModel(private val container: AppContainer) : ViewModel() {
         }
 
         viewModelScope.launch {
-            _uiState.value = state.copy(isGenerating = true, errorMessage = null)
+            _uiState.value = state.copy(isGenerating = true, errorMessage = null, statusMessage = null)
             val input = PlannerInput(
                 availableHours = state.availableHours,
                 energyLevel = state.energyLevel,
@@ -63,7 +69,10 @@ class PlannerViewModel(private val container: AppContainer) : ViewModel() {
             container.geminiRepository.generateDayPlan(input)
                 .onSuccess { blocks ->
                     container.blockRepository.replaceDayPlan(blocks)
-                    _uiState.value = _uiState.value.copy(isGenerating = false)
+                    _uiState.value = _uiState.value.copy(
+                        isGenerating = false,
+                        statusMessage = "Saved ${blocks.size} blocks to today's schedule."
+                    )
                 }
                 .onFailure { error ->
                     _uiState.value = _uiState.value.copy(
@@ -71,6 +80,37 @@ class PlannerViewModel(private val container: AppContainer) : ViewModel() {
                         errorMessage = error.message ?: "Couldn't generate a plan. Check your connection and API key."
                     )
                 }
+        }
+    }
+
+    fun saveBlock(
+        existing: DayBlock?,
+        title: String,
+        why: String,
+        microStep: String,
+        startMinuteOfDay: Int,
+        durationMinutes: Int,
+        category: BlockCategory,
+        isDecompressionBuffer: Boolean
+    ) {
+        if (title.isBlank()) return
+        viewModelScope.launch {
+            val block = DayBlock(
+                id = existing?.id ?: 0L,
+                title = title.trim(),
+                why = why.trim(),
+                microStep = microStep.trim(),
+                startMinuteOfDay = startMinuteOfDay.coerceIn(0, 23 * 60 + 59),
+                durationMinutes = durationMinutes.coerceIn(5, 360),
+                category = category,
+                isDecompressionBuffer = isDecompressionBuffer,
+                isCompleted = existing?.isCompleted ?: false
+            )
+            container.blockRepository.upsertBlock(block)
+            _uiState.value = _uiState.value.copy(
+                statusMessage = if (existing == null) "Block added." else "Block updated.",
+                errorMessage = null
+            )
         }
     }
 
