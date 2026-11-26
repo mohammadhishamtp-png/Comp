@@ -59,9 +59,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
@@ -78,6 +81,8 @@ import com.adhdcompanion.focus.model.LockMode
 import com.adhdcompanion.focus.ui.components.SectionLabel
 import com.adhdcompanion.focus.ui.viewmodel.FocusLockViewModel
 import com.adhdcompanion.focus.ui.viewmodel.ViewModelFactories
+import kotlinx.coroutines.launch
+import java.time.LocalDateTime
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -105,7 +110,12 @@ fun FocusLockScreen(
     }
 
     val eval = state.evaluation
-    val isRuleEditingAllowed = !state.config.isMasterEnabled || !eval.isInScheduledWindow || eval.isTemporaryUnlocked
+    val noBlockAppsYet = state.config.mode == LockMode.BLOCK_LIST && state.config.selectedPackages.isEmpty()
+    val isRuleEditingAllowed = !state.config.isMasterEnabled || noBlockAppsYet || !eval.isInScheduledWindow || eval.isTemporaryUnlocked
+
+    val scrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
+    var appPickerOffsetY by remember { mutableIntStateOf(0) }
 
     var editingWindow by remember { mutableStateOf<FocusLockWindow?>(null) }
     var showWindowDialog by remember { mutableStateOf(false) }
@@ -123,9 +133,27 @@ fun FocusLockScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(20.dp)
         ) {
+            state.feedbackMessage?.let { msg ->
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(msg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        TextButton(onClick = viewModel::clearFeedback) { Text("OK") }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
             val isMalfunctioning = state.isAccessibilitySettingOn && !state.isAccessibilityEnabled
 
             // 1. Accessibility Service status & setup / recovery guide
@@ -169,15 +197,21 @@ fun FocusLockScreen(
                         text = when {
                             state.isAccessibilityEnabled -> {
                                 val batteryNote = if (!state.isBatteryUnrestricted) {
-                                    "\n\nTip: Battery optimization is currently restricting this app. Open App Info -> Battery -> No restrictions so the system doesn't kill the blocker in the background."
+                                    "\n\nTip: Battery optimization is still restricting this app. Open App Info -> Battery -> No restrictions."
                                 } else ""
-                                "Connected & monitoring foreground app switches and mid-session App Info/uninstall attempts.$batteryNote"
+                                val telemetry = buildString {
+                                    append("Connected & monitoring foreground app switches.")
+                                    append(" (Events seen: ${state.eventsReceivedCount}")
+                                    state.lastForegroundPackage?.let { append(" • Last: $it") }
+                                    append(")")
+                                }
+                                "$telemetry$batteryNote\n\nOn Xiaomi/HyperOS: in App Info -> Other permissions, enable 'Display pop-up windows while running in the background' for reliable full-screen redirects."
                             }
                             isMalfunctioning -> {
-                                "Android shows 'This service is malfunctioning' or stopped binding the blocker after an app install or background kill.\n\nFix steps:\n1. Tap 'Open Accessibility Settings' -> turn Focus Companion App Blocker OFF, wait 2s, and turn it back ON.\n2. Tap 'Open App Info' -> set Battery to 'No restrictions' and enable Autostart (on Xiaomi/HyperOS/MIUI, also allow Restricted Settings under the ⋮ menu if shown)."
+                                "Android shows 'This service is malfunctioning' or stopped binding the blocker after an app install or background kill.\n\nFix steps:\n1. Tap 'Accessibility' -> turn Focus Companion App Blocker OFF, wait 2s, and turn it back ON.\n2. Tap 'App Info' -> Battery -> 'No restrictions', turn ON Autostart, and under Other permissions enable 'Display pop-up windows while running in the background'."
                             }
                             else -> {
-                                "Setup steps:\n1. If sideloaded on Android 13+: tap 'Open App Info' -> ⋮ menu -> Allow restricted settings.\n2. Tap 'Open Accessibility Settings' -> Downloaded apps -> turn ON Focus Companion App Blocker."
+                                "Setup steps:\n1. If sideloaded on Android 13+: tap 'App Info' -> ⋮ menu -> Allow restricted settings.\n2. In 'App Info' -> set Battery to 'No restrictions' & enable 'Display pop-up windows while running in the background' (HyperOS/MIUI).\n3. Tap 'Accessibility' -> Downloaded apps -> turn ON Focus Companion App Blocker."
                             }
                         },
                         style = MaterialTheme.typography.bodyMedium,
@@ -224,6 +258,20 @@ fun FocusLockScreen(
                             Text("App Info")
                         }
                     }
+                    if (state.isAccessibilityEnabled) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.testShieldOverlay() },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("test_shield_overlay_button")
+                        ) {
+                            Text("Test Blocker Overlay on This Screen")
+                        }
+                    }
                 }
             }
 
@@ -246,7 +294,7 @@ fun FocusLockScreen(
                 !state.isAccessibilityEnabled ->
                     "Turn ON Focus Companion App Blocker above so Android notifies us when a distracting app opens."
                 noAppsSelected ->
-                    "0 distracting apps are checked in your Block List below. Check at least 1 app to enforce blocking."
+                    "0 distracting apps are checked in your Block List below. Check at least 1 app, then tap Quick Lock or enable a schedule covering right now."
                 eval.isBlockingActive -> {
                     val scopeText = if (state.config.mode == LockMode.BLOCK_LIST) {
                         "$appCount distracting app${if (appCount == 1) "" else "s"} guarded"
@@ -259,10 +307,11 @@ fun FocusLockScreen(
                     "$scopeText until $endText."
                 }
                 !state.config.isMasterEnabled ->
-                    "Enable the master switch below or tap a Quick Lock duration to block right now."
+                    "Tap a Quick Lock duration below to block selected apps immediately, or turn ON the scheduled blocker switch."
                 else ->
-                    "Current time is outside scheduled focus hours. " +
-                        (state.nextScheduledWindowLabel?.let { "Next window: $it." } ?: "Enable or add a schedule below.")
+                    "Current time is outside scheduled focus hours (not blocking right now). " +
+                        (state.nextScheduledWindowLabel?.let { "Next window: $it. " } ?: "") +
+                        "Tap a Quick Lock button below to start blocking RIGHT NOW."
             }
 
             Card(
@@ -289,6 +338,27 @@ fun FocusLockScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Checklist: Accessibility ${if (state.isAccessibilityEnabled) "OK" else "Missing"} • Apps ${if (noAppsSelected) "0 (Select below)" else "$appCount chosen"} • Lock ${if (eval.isBlockingActive) "ACTIVE NOW" else "Inactive right now"}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    if (noAppsSelected) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                coroutineScope.launch {
+                                    scrollState.animateScrollTo(appPickerOffsetY)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Jump to App List to Pick Apps")
+                        }
+                    }
+
                     Spacer(Modifier.height(12.dp))
                     Text(
                         text = "Quick Lock Right Now",
@@ -331,7 +401,7 @@ fun FocusLockScreen(
             Spacer(Modifier.height(16.dp))
 
             // 2. Anti-Impulse Lock Guard / Cooldown Banner when in an active window
-            if (state.config.isMasterEnabled && eval.isInScheduledWindow) {
+            if (state.config.isMasterEnabled && eval.isInScheduledWindow && !noAppsSelected) {
                 Card(
                     shape = RoundedCornerShape(20.dp),
                     colors = CardDefaults.cardColors(
@@ -438,24 +508,6 @@ fun FocusLockScreen(
                     }
                 }
                 Spacer(Modifier.height(16.dp))
-            }
-
-            state.feedbackMessage?.let { msg ->
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(msg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                        TextButton(onClick = viewModel::clearFeedback) { Text("OK") }
-                    }
-                }
-                Spacer(Modifier.height(14.dp))
             }
 
             // 3. Master Enable Switch
@@ -569,67 +621,75 @@ fun FocusLockScreen(
             Spacer(Modifier.height(18.dp))
 
             // 7. Installed apps picker
-            SectionLabel(
-                if (state.config.mode == LockMode.BLOCK_LIST)
-                    "Distracting apps to block (${state.config.selectedPackages.size} selected)"
-                else
-                    "Allowed apps to permit (${state.config.selectedPackages.size} selected)"
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = state.appSearchQuery,
-                onValueChange = viewModel::updateAppSearchQuery,
-                label = { Text("Search installed apps") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(10.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onGloballyPositioned { coords ->
+                        appPickerOffsetY = coords.positionInParent().y.toInt()
+                    }
+            ) {
+                SectionLabel(
+                    if (state.config.mode == LockMode.BLOCK_LIST)
+                        "Distracting apps to block (${state.config.selectedPackages.size} selected)"
+                    else
+                        "Allowed apps to permit (${state.config.selectedPackages.size} selected)"
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = state.appSearchQuery,
+                    onValueChange = viewModel::updateAppSearchQuery,
+                    label = { Text("Search installed apps") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(10.dp))
 
-            if (state.isLoadingApps) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Loading installed apps…", style = MaterialTheme.typography.bodyMedium)
-                }
-            } else {
-                val query = state.appSearchQuery.trim().lowercase(Locale.getDefault())
-                val filteredApps = state.installedApps.filter {
-                    query.isBlank() ||
-                        it.label.lowercase(Locale.getDefault()).contains(query) ||
-                        it.packageName.lowercase(Locale.getDefault()).contains(query)
-                }.sortedByDescending { it.packageName in state.config.selectedPackages }
-
-                if (filteredApps.isEmpty()) {
-                    Text(
-                        "No matching launchable apps found.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                if (state.isLoadingApps) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Loading installed apps…", style = MaterialTheme.typography.bodyMedium)
+                    }
                 } else {
-                    filteredApps.forEach { appInfo ->
-                        val checked = appInfo.packageName in state.config.selectedPackages
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = isRuleEditingAllowed) {
-                                    viewModel.togglePackageSelection(appInfo.packageName)
-                                }
-                                .padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = checked,
-                                onCheckedChange = { viewModel.togglePackageSelection(appInfo.packageName) },
-                                enabled = isRuleEditingAllowed
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(appInfo.label, style = MaterialTheme.typography.bodyLarge)
-                                Text(
-                                    appInfo.packageName,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    val query = state.appSearchQuery.trim().lowercase(Locale.getDefault())
+                    val filteredApps = state.installedApps.filter {
+                        query.isBlank() ||
+                            it.label.lowercase(Locale.getDefault()).contains(query) ||
+                            it.packageName.lowercase(Locale.getDefault()).contains(query)
+                    }.sortedByDescending { it.packageName in state.config.selectedPackages }
+
+                    if (filteredApps.isEmpty()) {
+                        Text(
+                            "No matching launchable apps found.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        filteredApps.forEach { appInfo ->
+                            val checked = appInfo.packageName in state.config.selectedPackages
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = isRuleEditingAllowed) {
+                                        viewModel.togglePackageSelection(appInfo.packageName)
+                                    }
+                                    .padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = checked,
+                                    onCheckedChange = { viewModel.togglePackageSelection(appInfo.packageName) },
+                                    enabled = isRuleEditingAllowed
                                 )
+                                Spacer(Modifier.width(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(appInfo.label, style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        appInfo.packageName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
@@ -726,12 +786,18 @@ private fun FocusWindowEditorDialog(
     onDismiss: () -> Unit,
     onSave: (name: String, startMinute: Int, endMinute: Int, days: Set<Int>) -> Unit
 ) {
+    val nowLdt = remember { LocalDateTime.now() }
+    val defaultStartMin = nowLdt.hour * 60 + nowLdt.minute
+    val defaultEndMin = (defaultStartMin + 120) % (24 * 60)
+
     var name by remember { mutableStateOf(initial?.name ?: "Study Focus Window") }
-    var startHour by remember { mutableIntStateOf((initial?.startMinuteOfDay ?: 9 * 60) / 60) }
-    var startMin by remember { mutableIntStateOf((initial?.startMinuteOfDay ?: 9 * 60) % 60) }
-    var endHour by remember { mutableIntStateOf((initial?.endMinuteOfDay ?: 12 * 60) / 60) }
-    var endMin by remember { mutableIntStateOf((initial?.endMinuteOfDay ?: 12 * 60) % 60) }
-    var selectedDays by remember { mutableStateOf(initial?.activeDays ?: setOf(1, 2, 3, 4, 5)) }
+    val startHour = (initial?.startMinuteOfDay ?: defaultStartMin) / 60
+    val startMin = (initial?.startMinuteOfDay ?: defaultStartMin) % 60
+    val endHour = (initial?.endMinuteOfDay ?: defaultEndMin) / 60
+    val endMin = (initial?.endMinuteOfDay ?: defaultEndMin) % 60
+    var selectedDays by remember {
+        mutableStateOf(initial?.activeDays ?: (setOf(1, 2, 3, 4, 5) + nowLdt.dayOfWeek.value))
+    }
 
     val startPicker = rememberTimePickerState(initialHour = startHour, initialMinute = startMin, is24Hour = false)
     val endPicker = rememberTimePickerState(initialHour = endHour, initialMinute = endMin, is24Hour = false)

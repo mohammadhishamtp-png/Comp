@@ -142,6 +142,8 @@ class FocusLockManager private constructor(context: Context) {
             scheduler.cancelLockBoundaryEvaluation()
         }
 
+        FocusBlockerAccessibilityService.notifyRulesChanged()
+
         return state
     }
 
@@ -160,6 +162,8 @@ class FocusLockManager private constructor(context: Context) {
     fun canEditRules(nowMillis: Long = System.currentTimeMillis()): Boolean {
         val current = _config.value
         if (!current.isMasterEnabled) return true
+        // Never lock the user out of picking apps when the block list has 0 apps selected.
+        if (current.mode == LockMode.BLOCK_LIST && current.selectedPackages.isEmpty()) return true
         val eval = evaluateNow(nowMillis)
         return !eval.isInScheduledWindow || eval.isTemporaryUnlocked
     }
@@ -248,9 +252,8 @@ class FocusLockManager private constructor(context: Context) {
 
         val isSystemSettingsOrInstaller =
             packageName == "com.android.settings" ||
-                packageName == "com.android.packageinstaller" ||
-                packageName == "com.google.android.packageinstaller" ||
-                packageName == "com.samsung.android.packageinstaller"
+                packageName == "com.miui.securitycenter" ||
+                packageName.contains("packageinstaller")
 
         if (!isSystemSettingsOrInstaller) return false
 

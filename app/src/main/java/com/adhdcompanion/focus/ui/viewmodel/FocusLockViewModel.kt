@@ -27,6 +27,8 @@ data class FocusLockUiState(
     val isAccessibilityEnabled: Boolean = false,
     val isAccessibilitySettingOn: Boolean = false,
     val isBatteryUnrestricted: Boolean = true,
+    val eventsReceivedCount: Long = 0L,
+    val lastForegroundPackage: String? = null,
     val serviceError: String? = null,
     val installedApps: List<InstalledAppInfo> = emptyList(),
     val isLoadingApps: Boolean = true,
@@ -69,6 +71,11 @@ class FocusLockViewModel(
                 _uiState.value = _uiState.value.copy(
                     config = config,
                     evaluation = eval,
+                    isAccessibilityEnabled = FocusBlockerAccessibilityService.isServiceEnabled(appContext),
+                    isAccessibilitySettingOn = FocusBlockerAccessibilityService.isAccessibilitySettingOn(appContext),
+                    eventsReceivedCount = FocusBlockerAccessibilityService.eventsReceivedCount,
+                    lastForegroundPackage = FocusBlockerAccessibilityService.lastForegroundPackage,
+                    serviceError = FocusBlockerAccessibilityService.lastServiceError,
                     nextScheduledWindowLabel = nextLabel
                 )
             }
@@ -83,6 +90,8 @@ class FocusLockViewModel(
             isAccessibilityEnabled = liveEnabled,
             isAccessibilitySettingOn = settingOn,
             isBatteryUnrestricted = batteryUnrestricted,
+            eventsReceivedCount = FocusBlockerAccessibilityService.eventsReceivedCount,
+            lastForegroundPackage = FocusBlockerAccessibilityService.lastForegroundPackage,
             serviceError = FocusBlockerAccessibilityService.lastServiceError
         )
         lockManager.evaluateAndSyncState(appContext)
@@ -156,7 +165,7 @@ class FocusLockViewModel(
             } else {
                 cfg.windows.map { if (it.id == existingId) window else it }
             }
-            cfg.copy(windows = nextWindows)
+            cfg.copy(windows = nextWindows, isMasterEnabled = true)
         }
         if (!updated) notifyLocked()
     }
@@ -197,14 +206,25 @@ class FocusLockViewModel(
         val cfg = _uiState.value.config
         if (cfg.mode == LockMode.BLOCK_LIST && cfg.selectedPackages.isEmpty()) {
             _uiState.value = _uiState.value.copy(
-                feedbackMessage = "Pick at least 1 distracting app below before starting Quick Lock."
+                feedbackMessage = "Step 1: Scroll down and check at least 1 distracting app first, then tap Quick Lock."
             )
             return
         }
         lockManager.startQuickLockWindow(durationMinutes)
         val label = if (durationMinutes >= 60) "${durationMinutes / 60}h" else "${durationMinutes}m"
         _uiState.value = _uiState.value.copy(
-            feedbackMessage = "Quick Focus Lock active for $label."
+            feedbackMessage = "Quick Focus Lock is LIVE for $label. Selected apps are blocked now."
+        )
+    }
+
+    fun testShieldOverlay() {
+        val shown = FocusBlockerAccessibilityService.triggerTestShield()
+        _uiState.value = _uiState.value.copy(
+            feedbackMessage = if (shown) {
+                "Test shield overlay sent to Accessibility Service."
+            } else {
+                "Accessibility Service is not actively bound yet. Turn it OFF -> ON in Accessibility Settings."
+            }
         )
     }
 
