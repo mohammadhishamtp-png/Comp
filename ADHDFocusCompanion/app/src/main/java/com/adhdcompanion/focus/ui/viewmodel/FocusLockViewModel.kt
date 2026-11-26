@@ -25,6 +25,9 @@ data class FocusLockUiState(
     val config: FocusLockConfig = FocusLockConfig(),
     val evaluation: LockEvaluationState = LockEvaluationState(),
     val isAccessibilityEnabled: Boolean = false,
+    val isAccessibilitySettingOn: Boolean = false,
+    val isBatteryUnrestricted: Boolean = true,
+    val serviceError: String? = null,
     val installedApps: List<InstalledAppInfo> = emptyList(),
     val isLoadingApps: Boolean = true,
     val appSearchQuery: String = "",
@@ -73,8 +76,15 @@ class FocusLockViewModel(
     }
 
     fun refreshAccessibilityStatus() {
-        val enabled = FocusBlockerAccessibilityService.isServiceEnabled(appContext)
-        _uiState.value = _uiState.value.copy(isAccessibilityEnabled = enabled)
+        val liveEnabled = FocusBlockerAccessibilityService.isServiceEnabled(appContext)
+        val settingOn = FocusBlockerAccessibilityService.isAccessibilitySettingOn(appContext)
+        val batteryUnrestricted = FocusBlockerAccessibilityService.isIgnoringBatteryOptimizations(appContext)
+        _uiState.value = _uiState.value.copy(
+            isAccessibilityEnabled = liveEnabled,
+            isAccessibilitySettingOn = settingOn,
+            isBatteryUnrestricted = batteryUnrestricted,
+            serviceError = FocusBlockerAccessibilityService.lastServiceError
+        )
         lockManager.evaluateAndSyncState(appContext)
     }
 

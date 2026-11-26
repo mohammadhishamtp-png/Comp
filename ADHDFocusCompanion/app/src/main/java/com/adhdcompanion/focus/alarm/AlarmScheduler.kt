@@ -17,7 +17,7 @@ import java.util.Calendar
 class AlarmScheduler(private val context: Context) {
 
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-    private val prefs = SecurePrefsManager(context)
+    private val prefs: SecurePrefsManager by lazy { SecurePrefsManager(context) }
 
     fun canScheduleExactAlarms(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -168,37 +168,41 @@ class AlarmScheduler(private val context: Context) {
     }
 
     fun scheduleLockBoundaryEvaluation(triggerAtMillis: Long) {
-        val intent = Intent(context, AlarmReceiver::class.java).apply {
-            action = AlarmReceiver.ACTION_EVALUATE_LOCK_WINDOWS
-        }
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            REQUEST_CODE_LOCK_BOUNDARY,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        if (canScheduleExactAlarms()) {
-            try {
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
-            } catch (_: SecurityException) {
+        runCatching {
+            val intent = Intent(context, AlarmReceiver::class.java).apply {
+                action = AlarmReceiver.ACTION_EVALUATE_LOCK_WINDOWS
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                REQUEST_CODE_LOCK_BOUNDARY,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            if (canScheduleExactAlarms()) {
+                try {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
+                } catch (_: SecurityException) {
+                    alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
+                }
+            } else {
                 alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
             }
-        } else {
-            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
         }
     }
 
     fun cancelLockBoundaryEvaluation() {
-        val intent = Intent(context, AlarmReceiver::class.java).apply {
-            action = AlarmReceiver.ACTION_EVALUATE_LOCK_WINDOWS
+        runCatching {
+            val intent = Intent(context, AlarmReceiver::class.java).apply {
+                action = AlarmReceiver.ACTION_EVALUATE_LOCK_WINDOWS
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                REQUEST_CODE_LOCK_BOUNDARY,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            alarmManager.cancel(pendingIntent)
         }
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            REQUEST_CODE_LOCK_BOUNDARY,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        alarmManager.cancel(pendingIntent)
     }
 
     fun cancelDailyAlarm() {

@@ -126,7 +126,9 @@ fun FocusLockScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(20.dp)
         ) {
-            // 1. Accessibility Service status & setup guide
+            val isMalfunctioning = state.isAccessibilitySettingOn && !state.isAccessibilityEnabled
+
+            // 1. Accessibility Service status & setup / recovery guide
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(
@@ -149,10 +151,11 @@ fun FocusLockScreen(
                         )
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            text = if (state.isAccessibilityEnabled)
-                                "Accessibility Blocker Active"
-                            else
-                                "Accessibility Permission Needed",
+                            text = when {
+                                state.isAccessibilityEnabled -> "Accessibility Blocker Active"
+                                isMalfunctioning -> "Accessibility Service Disconnected"
+                                else -> "Accessibility Permission Needed"
+                            },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = if (state.isAccessibilityEnabled)
@@ -163,10 +166,19 @@ fun FocusLockScreen(
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = if (state.isAccessibilityEnabled) {
-                            "Foreground app switches and mid-session App Info/uninstall attempts are monitored during scheduled lock windows."
-                        } else {
-                            "Setup steps:\n1. Tap 'Open Accessibility Settings' below.\n2. Find 'Focus Companion App Blocker' under Downloaded apps.\n3. Toggle it ON and return here."
+                        text = when {
+                            state.isAccessibilityEnabled -> {
+                                val batteryNote = if (!state.isBatteryUnrestricted) {
+                                    "\n\nTip: Battery optimization is currently restricting this app. Open App Info -> Battery -> No restrictions so the system doesn't kill the blocker in the background."
+                                } else ""
+                                "Connected & monitoring foreground app switches and mid-session App Info/uninstall attempts.$batteryNote"
+                            }
+                            isMalfunctioning -> {
+                                "Android shows 'This service is malfunctioning' or stopped binding the blocker after an app install or background kill.\n\nFix steps:\n1. Tap 'Open Accessibility Settings' -> turn Focus Companion App Blocker OFF, wait 2s, and turn it back ON.\n2. Tap 'Open App Info' -> set Battery to 'No restrictions' and enable Autostart (on Xiaomi/HyperOS/MIUI, also allow Restricted Settings under the ⋮ menu if shown)."
+                            }
+                            else -> {
+                                "Setup steps:\n1. If sideloaded on Android 13+: tap 'Open App Info' -> ⋮ menu -> Allow restricted settings.\n2. Tap 'Open Accessibility Settings' -> Downloaded apps -> turn ON Focus Companion App Blocker."
+                            }
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (state.isAccessibilityEnabled)
@@ -174,14 +186,43 @@ fun FocusLockScreen(
                         else
                             MaterialTheme.colorScheme.onErrorContainer
                     )
+                    state.serviceError?.let { err ->
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "Last service note: $err",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
                     Spacer(Modifier.height(12.dp))
-                    Button(
-                        onClick = { FocusBlockerAccessibilityService.openAccessibilitySettings(context) },
-                        modifier = Modifier.testTag("open_accessibility_settings_button")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Filled.Security, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Open Accessibility Settings")
+                        Button(
+                            onClick = { FocusBlockerAccessibilityService.openAccessibilitySettings(context) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("open_accessibility_settings_button")
+                        ) {
+                            Icon(Icons.Filled.Security, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Accessibility")
+                        }
+                        OutlinedButton(
+                            onClick = { FocusBlockerAccessibilityService.openAppInfoSettings(context) },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = if (state.isAccessibilityEnabled)
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                else
+                                    MaterialTheme.colorScheme.onErrorContainer
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("open_app_info_settings_button")
+                        ) {
+                            Text("App Info")
+                        }
                     }
                 }
             }
@@ -192,6 +233,7 @@ fun FocusLockScreen(
             val appCount = state.config.selectedPackages.size
             val noAppsSelected = state.config.mode == LockMode.BLOCK_LIST && appCount == 0
             val statusHeadline = when {
+                isMalfunctioning -> "Status: Restart Accessibility Toggle"
                 !state.isAccessibilityEnabled -> "Status: Needs Accessibility Permission"
                 noAppsSelected -> "Status: Select Apps Below to Block"
                 eval.isBlockingActive -> "Status: BLOCKING LIVE NOW"
@@ -199,6 +241,8 @@ fun FocusLockScreen(
                 else -> "Status: Armed & Waiting"
             }
             val statusDetail = when {
+                isMalfunctioning ->
+                    "The system toggle is ON, but Android stopped binding the service. Toggle it OFF -> ON in Accessibility Settings above."
                 !state.isAccessibilityEnabled ->
                     "Turn ON Focus Companion App Blocker above so Android notifies us when a distracting app opens."
                 noAppsSelected ->

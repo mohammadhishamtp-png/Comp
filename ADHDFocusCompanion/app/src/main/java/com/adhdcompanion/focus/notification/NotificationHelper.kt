@@ -146,34 +146,38 @@ object NotificationHelper {
         windowName: String,
         untilText: String
     ) {
-        ensureChannel(context)
-        val openIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra(MainActivity.EXTRA_OPEN_FOCUS_LOCK, true)
+        runCatching {
+            ensureChannel(context)
+            val openIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(MainActivity.EXTRA_OPEN_FOCUS_LOCK, true)
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                LOCK_NOTIFICATION_ID,
+                openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val notification = NotificationCompat.Builder(context, LOCK_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setContentTitle("Focus Lock Active: $windowName")
+                .setContentText("Distracting apps blocked until $untilText")
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setContentIntent(pendingIntent)
+                .build()
+
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(LOCK_NOTIFICATION_ID, notification)
         }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            LOCK_NOTIFICATION_ID,
-            openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notification = NotificationCompat.Builder(context, LOCK_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
-            .setContentTitle("Focus Lock Active: $windowName")
-            .setContentText("Distracting apps blocked until $untilText")
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setContentIntent(pendingIntent)
-            .build()
-
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(LOCK_NOTIFICATION_ID, notification)
     }
 
     fun cancelFocusLockNotification(context: Context) {
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.cancel(LOCK_NOTIFICATION_ID)
+        runCatching {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.cancel(LOCK_NOTIFICATION_ID)
+        }
     }
 }

@@ -42,11 +42,17 @@ class FocusLockManager private constructor(context: Context) {
     private val _blockedEvents = MutableStateFlow(loadBlockedEvents())
     val blockedEvents: StateFlow<List<BlockedAppEvent>> = _blockedEvents.asStateFlow()
 
+    @Suppress("USELESS_ELVIS")
     @Synchronized
     private fun loadConfig(): FocusLockConfig {
         val raw = prefs.getString(KEY_CONFIG_JSON, null) ?: return FocusLockConfig()
-        return runCatching { gson.fromJson(raw, FocusLockConfig::class.java) }
-            .getOrNull() ?: FocusLockConfig()
+        val parsed = runCatching { gson.fromJson(raw, FocusLockConfig::class.java) }
+            .getOrNull() ?: return FocusLockConfig()
+        return parsed.copy(
+            mode = parsed.mode ?: LockMode.BLOCK_LIST,
+            selectedPackages = parsed.selectedPackages ?: emptySet(),
+            windows = parsed.windows ?: FocusLockConfig().windows
+        )
     }
 
     @Synchronized
