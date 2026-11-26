@@ -39,11 +39,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.adhdcompanion.focus.di.AppContainer
 import com.adhdcompanion.focus.model.MicroStep
+import com.adhdcompanion.focus.ui.viewmodel.StuckViewModel
 import com.adhdcompanion.focus.ui.viewmodel.ViewModelFactories
 
 @Composable
 fun StuckScreen(container: AppContainer) {
-    val viewModel = viewModel(factory = ViewModelFactories.stuck(container))
+    val viewModel = viewModel<StuckViewModel>(factory = ViewModelFactories.stuck(container))
     val state by viewModel.uiState.collectAsState()
 
     val micPermissionLauncher = rememberLauncherForActivityResult(

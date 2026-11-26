@@ -2,6 +2,8 @@ package com.adhdcompanion.focus.di
 
 import android.content.Context
 import com.adhdcompanion.focus.blocker.FocusLockManager
+import com.adhdcompanion.focus.data.ai.HybridDoubtEngine
+import com.adhdcompanion.focus.data.ai.LocalLiteRtEngine
 import com.adhdcompanion.focus.data.local.AppDatabase
 import com.adhdcompanion.focus.data.prefs.SecurePrefsManager
 import com.adhdcompanion.focus.data.remote.GeminiRepository
@@ -38,6 +40,14 @@ class AppContainer(context: Context) {
 
     val geminiRepository: GeminiRepository by lazy {
         GeminiRepository(prefs)
+    }
+
+    val localLiteRtEngine: LocalLiteRtEngine by lazy {
+        LocalLiteRtEngine(appContext)
+    }
+
+    val hybridDoubtEngine: HybridDoubtEngine by lazy {
+        HybridDoubtEngine(appContext, prefs, localLiteRtEngine)
     }
 
     val speechManager: SpeechManager by lazy {

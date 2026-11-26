@@ -56,7 +56,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.adhdcompanion.focus.alarm.AlarmEventBus
-import com.adhdcompanion.focus.alarm.AlarmSoundPlayer
+import com.adhdcompanion.focus.alarm.AlarmService
 import com.adhdcompanion.focus.blocker.FocusLockManager
 import com.adhdcompanion.focus.di.AppContainer
 import com.adhdcompanion.focus.model.DayBlock
@@ -77,6 +77,8 @@ fun NowBriefingScreen(
     val viewModel = viewModel<NowViewModel>(factory = ViewModelFactories.now(container))
     val state by viewModel.uiState.collectAsState()
     val isAlarmRinging by AlarmEventBus.isRinging.collectAsState()
+
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -153,21 +155,20 @@ fun NowBriefingScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        "Briefing alarm ringing",
-                        style = MaterialTheme.typography.titleMedium,
+                        "Briefing alarm active — reading today's schedule",
+                        style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.weight(1f)
                     )
+                    Spacer(Modifier.width(8.dp))
                     Button(
-                        onClick = {
-                            AlarmSoundPlayer.stop()
-                            viewModel.speakBriefing()
-                        }
+                        onClick = { AlarmService.dismissAlarm(context) },
+                        modifier = Modifier.testTag("dismiss_alarm_button")
                     ) {
                         Icon(Icons.Filled.AlarmOff, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Stop & Speak")
+                        Text("Dismiss")
                     }
                 }
             }
@@ -259,7 +260,7 @@ fun NowBriefingScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        if (!container.prefs.hasApiKey()) {
+        if (!container.prefs.hasAnyCloudKey() && !container.localLiteRtEngine.hasModel()) {
             ApiKeyNudgeCard(onOpenSettings)
             Spacer(Modifier.height(16.dp))
         }

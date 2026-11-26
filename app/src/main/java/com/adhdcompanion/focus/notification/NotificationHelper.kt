@@ -88,12 +88,12 @@ object NotificationHelper {
         manager.notify(NOTIFICATION_ID, notification)
     }
 
-    fun showAlarmNotification(
+    fun buildAlarmNotification(
         context: Context,
         title: String,
         body: String,
         autoSpeak: Boolean
-    ) {
+    ): android.app.Notification {
         ensureChannel(context)
 
         val openIntent = Intent(context, MainActivity::class.java).apply {
@@ -118,7 +118,7 @@ object NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(context, ALARM_CHANNEL_ID)
+        return NotificationCompat.Builder(context, ALARM_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(title)
             .setContentText(body)
@@ -126,12 +126,21 @@ object NotificationHelper {
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setAutoCancel(true)
+            .setOngoing(true)
+            .setAutoCancel(false)
             .setContentIntent(contentPendingIntent)
-            .addAction(0, "Stop & Speak", contentPendingIntent)
+            .addAction(0, "Open Now", contentPendingIntent)
             .addAction(0, "Dismiss", dismissPendingIntent)
             .build()
+    }
 
+    fun showAlarmNotification(
+        context: Context,
+        title: String,
+        body: String,
+        autoSpeak: Boolean
+    ) {
+        val notification = buildAlarmNotification(context, title, body, autoSpeak)
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(ALARM_NOTIFICATION_ID, notification)
     }

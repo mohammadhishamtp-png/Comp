@@ -1,11 +1,16 @@
 package com.adhdcompanion.focus.ui.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.adhdcompanion.focus.data.ai.DoubtBackend
+import com.adhdcompanion.focus.data.ai.HybridDoubtEvent
+import com.adhdcompanion.focus.data.ai.LocalModelInfo
 import com.adhdcompanion.focus.di.AppContainer
 import com.adhdcompanion.focus.model.BlockCategory
 import com.adhdcompanion.focus.model.DoubtSolution
 import com.adhdcompanion.focus.model.EnergyLevel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,18 +20,36 @@ data class DoubtSolverUiState(
     val doubtText: String = "",
     val subjectText: String = "",
     val energyLevel: EnergyLevel? = EnergyLevel.MEDIUM,
+    val attachedImageUri: Uri? = null,
+    val localModelInfo: LocalModelInfo = LocalModelInfo(),
+    val isImportingModel: Boolean = false,
     val isListening: Boolean = false,
     val isLoading: Boolean = false,
     val isSpeaking: Boolean = false,
+    val activeBackend: DoubtBackend? = null,
+    val statusMessage: String? = null,
+    val streamingText: String = "",
     val solution: DoubtSolution? = null,
+    val statusNote: String? = null,
+    val needsOfflineModel: Boolean = false,
     val actionFeedback: String? = null,
     val errorMessage: String? = null
 )
 
 class DoubtSolverViewModel(private val container: AppContainer) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(DoubtSolverUiState())
+    private val _uiState = MutableStateFlow(
+        DoubtSolverUiState(localModelInfo = container.localLiteRtEngine.getModelInfo())
+    )
     val uiState: StateFlow<DoubtSolverUiState> = _uiState.asStateFlow()
+
+    private var activeGenerationJob: Job? = null
+
+    fun refreshLocalModelInfo() {
+        _uiState.value = _uiState.value.copy(
+            localModelInfo = container.localLiteRtEngine.getModelInfo()
+        )
+    }
 
     fun updateDoubtText(text: String) {
         _uiState.value = _uiState.value.copy(doubtText = text, errorMessage = null)
@@ -38,6 +61,35 @@ class DoubtSolverViewModel(private val container: AppContainer) : ViewModel() {
 
     fun updateEnergyLevel(level: EnergyLevel?) {
         _uiState.value = _uiState.value.copy(energyLevel = level)
+    }
+
+    fun attachImage(uri: Uri?) {
+        _uiState.value = _uiState.value.copy(attachedImageUri = uri, errorMessage = null)
+    }
+
+    fun importOfflineModel(uri: Uri) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isImportingModel = true,
+                errorMessage = null,
+                actionFeedback = null
+            )
+            container.localLiteRtEngine.importModelFromUri(uri)
+                .onSuccess { info ->
+                    _uiState.value = _uiState.value.copy(
+                        isImportingModel = false,
+                        localModelInfo = info,
+                        needsOfflineModel = false,
+                        actionFeedback = "Offline model ready: ${info.fileName} • ${info.formattedSize}"
+                    )
+                }
+                .onFailure { err ->
+                    _uiState.value = _uiState.value.copy(
+                        isImportingModel = false,
+                        errorMessage = err.message ?: "Failed to import .litertlm model file."
+                    )
+                }
+        }
     }
 
     fun startVoiceInput() {
@@ -65,37 +117,85 @@ class DoubtSolverViewModel(private val container: AppContainer) : ViewModel() {
 
     fun solveDoubt() {
         val state = _uiState.value
-        if (state.doubtText.isBlank()) {
-            _uiState.value = state.copy(errorMessage = "Enter or speak your study doubt first.")
-            return
+        val promptText = state.doubtText.trim().ifBlank {
+            if (state.attachedImageUri != null) "Explain what is shown in this study image step by step." else ""
         }
-        if (!container.prefs.hasApiKey()) {
-            _uiState.value = state.copy(errorMessage = "Add your Gemini API key in Settings to solve doubts.")
+        if (promptText.isBlank()) {
+            _uiState.value = state.copy(errorMessage = "Enter a doubt or attach a study photo first.")
             return
         }
 
-        viewModelScope.launch {
-            _uiState.value = state.copy(
+        activeGenerationJob?.cancel()
+        activeGenerationJob = viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
                 isLoading = true,
                 errorMessage = null,
-                actionFeedback = null
+                actionFeedback = null,
+                statusNote = null,
+                needsOfflineModel = false,
+                streamingText = "",
+                solution = null,
+                activeBackend = null,
+                statusMessage = "Routing request..."
             )
-            container.geminiRepository.solveDoubt(
-                doubt = state.doubtText.trim(),
+
+            container.hybridDoubtEngine.solveDoubtStream(
+                doubt = promptText,
                 subject = state.subjectText.trim().ifBlank { null },
-                energyLevel = state.energyLevel
-            ).onSuccess { solution ->
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    solution = solution
-                )
-            }.onFailure { err ->
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    errorMessage = err.message ?: "Couldn't break down that doubt right now."
-                )
+                energyLevel = state.energyLevel,
+                imageUri = state.attachedImageUri
+            ).collect { event ->
+                when (event) {
+                    is HybridDoubtEvent.Status -> {
+                        _uiState.value = _uiState.value.copy(
+                            activeBackend = event.backend,
+                            statusMessage = event.message
+                        )
+                    }
+
+                    is HybridDoubtEvent.Delta -> {
+                        _uiState.value = _uiState.value.copy(
+                            activeBackend = event.backend,
+                            streamingText = event.fullText,
+                            statusMessage = null
+                        )
+                    }
+
+                    is HybridDoubtEvent.Completed -> {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            activeBackend = event.backend,
+                            streamingText = event.fullText,
+                            solution = event.solution,
+                            statusNote = event.note,
+                            statusMessage = null,
+                            needsOfflineModel = false
+                        )
+                    }
+
+                    is HybridDoubtEvent.Error -> {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            statusMessage = null,
+                            errorMessage = event.message,
+                            needsOfflineModel = event.needsOfflineModel
+                        )
+                    }
+                }
             }
         }
+    }
+
+    fun cancelGeneration() {
+        activeGenerationJob?.cancel()
+        activeGenerationJob = null
+        viewModelScope.launch {
+            container.localLiteRtEngine.cancelGeneration()
+        }
+        _uiState.value = _uiState.value.copy(
+            isLoading = false,
+            statusMessage = null
+        )
     }
 
     fun speakSolution() {
@@ -146,7 +246,15 @@ class DoubtSolverViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     fun reset() {
+        cancelGeneration()
         container.speechManager.stop()
-        _uiState.value = DoubtSolverUiState()
+        _uiState.value = DoubtSolverUiState(
+            localModelInfo = container.localLiteRtEngine.getModelInfo()
+        )
+    }
+
+    override fun onCleared() {
+        activeGenerationJob?.cancel()
+        super.onCleared()
     }
 }

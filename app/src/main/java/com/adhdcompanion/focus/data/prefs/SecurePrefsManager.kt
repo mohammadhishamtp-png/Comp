@@ -36,6 +36,14 @@ class SecurePrefsManager(context: Context) {
                 .apply()
         }
 
+    var groqApiKey: String?
+        get() = prefs.getString(KEY_GROQ_API_KEY, null)?.trim()?.ifBlank { null }
+        set(value) {
+            prefs.edit()
+                .putString(KEY_GROQ_API_KEY, value?.trim()?.ifBlank { null })
+                .apply()
+        }
+
     var useFlashLiteFallbackModel: Boolean
         get() = prefs.getBoolean(KEY_USE_FALLBACK_MODEL, false)
         set(value) {
@@ -73,8 +81,13 @@ class SecurePrefsManager(context: Context) {
 
     fun hasApiKey(): Boolean = !geminiApiKey.isNullOrBlank()
 
+    fun hasGroqApiKey(): Boolean = !groqApiKey.isNullOrBlank()
+
+    fun hasAnyCloudKey(): Boolean = hasGroqApiKey() || hasApiKey()
+
     companion object {
         private const val KEY_GEMINI_API_KEY = "gemini_api_key"
+        private const val KEY_GROQ_API_KEY = "groq_api_key"
         private const val KEY_USE_FALLBACK_MODEL = "use_fallback_model"
         private const val KEY_RESOLVED_TEXT_MODEL = "resolved_text_model"
         private const val KEY_USER_NAME = "user_display_name"

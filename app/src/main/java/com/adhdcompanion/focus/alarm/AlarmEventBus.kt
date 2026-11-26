@@ -83,7 +83,16 @@ object AlarmSoundPlayer {
     }
 
     @Synchronized
-    fun stop() {
+    fun stop(context: Context? = null) {
+        stopLocalOnly()
+        context?.let {
+            val stopIntent = android.content.Intent(it.applicationContext, AlarmService::class.java)
+            runCatching { it.applicationContext.stopService(stopIntent) }
+        }
+    }
+
+    @Synchronized
+    fun stopLocalOnly() {
         mainHandler.removeCallbacks(autoStopRunnable)
         mediaPlayer?.let { player ->
             runCatching {

@@ -14,13 +14,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.adhdcompanion.focus.alarm.AlarmEventBus
-import com.adhdcompanion.focus.alarm.AlarmSoundPlayer
 import com.adhdcompanion.focus.blocker.FocusBlockerAccessibilityService
 import com.adhdcompanion.focus.navigation.AppNavigation
 import com.adhdcompanion.focus.navigation.BlockedRedirectPrompt
-import com.adhdcompanion.focus.notification.NotificationHelper
 import com.adhdcompanion.focus.ui.theme.ADHDFocusCompanionTheme
-import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
@@ -38,16 +35,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             ADHDFocusCompanionTheme {
-                // Listen for foreground alarm events so SpeechManager speaks via EXTRA_AUTO_SPEAK
+                // Navigate to Now when a scheduled alarm fires; AlarmService owns foreground audio + full schedule TTS until dismissed
                 LaunchedEffect(Unit) {
-                    AlarmEventBus.events.collect { event ->
+                    AlarmEventBus.events.collect {
                         navigateToNowTriggerId++
-                        if (event.autoSpeak) {
-                            delay(1600L) // Let alarm chime sound briefly before speaking briefing
-                            AlarmSoundPlayer.stop()
-                            NotificationHelper.cancelAlarmNotification(this@MainActivity)
-                            autoSpeakTriggerId++
-                        }
                     }
                 }
 
@@ -102,10 +93,10 @@ class MainActivity : ComponentActivity() {
         }
 
         if (intent.getBooleanExtra(EXTRA_AUTO_SPEAK, false)) {
-            AlarmSoundPlayer.stop()
-            NotificationHelper.cancelAlarmNotification(this)
             navigateToNowTriggerId++
-            autoSpeakTriggerId++
+            if (!AlarmEventBus.isRinging.value) {
+                autoSpeakTriggerId++
+            }
             intent.removeExtra(EXTRA_AUTO_SPEAK)
         }
     }

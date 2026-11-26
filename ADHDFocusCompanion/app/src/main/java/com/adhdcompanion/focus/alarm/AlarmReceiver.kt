@@ -16,8 +16,7 @@ class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             ACTION_DISMISS_ALARM -> {
-                AlarmSoundPlayer.stop()
-                NotificationHelper.cancelAlarmNotification(context)
+                AlarmService.dismissAlarm(context)
                 return
             }
 
@@ -30,29 +29,25 @@ class AlarmReceiver : BroadcastReceiver() {
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         val wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
-            "ADHDFocusCompanion:AlarmWakeLock"
+            "ADHDFocusCompanion:AlarmReceiverHandoff"
         )
-        wakeLock.acquire(20_000L)
+        wakeLock.acquire(10_000L)
 
         try {
-            val label = intent.getStringExtra(EXTRA_LABEL) ?: "Time to check in"
+            val label = intent.getStringExtra(EXTRA_LABEL) ?: "Good morning — here is your schedule"
             val autoSpeak = intent.getBooleanExtra(EXTRA_AUTO_SPEAK, true)
 
             // Re-evaluate scheduled focus lock windows whenever an alarm fires
             FocusLockManager.getInstance(context).evaluateAndSyncState(context)
 
-            // Play alarm sound on AudioAttributes.USAGE_ALARM (with TYPE_NOTIFICATION fallback)
-            AlarmSoundPlayer.playAlarmChime(context)
-
-            // Post high-priority alarm notification with EXTRA_AUTO_SPEAK
-            NotificationHelper.showAlarmNotification(
+            // Start foreground AlarmService (holds WakeLock, loops USAGE_ALARM tone, reads full day schedule)
+            AlarmService.startAlarm(
                 context = context,
-                title = "Focus Companion Alarm",
-                body = label,
+                label = label,
                 autoSpeak = autoSpeak
             )
 
-            // Notify foreground UI (if currently open) to surface banner & trigger SpeechManager.speak
+            // Notify foreground UI (if currently open) to surface ringing status banner
             AlarmEventBus.emit(
                 AlarmTriggerEvent(
                     label = label,
