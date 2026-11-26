@@ -77,6 +77,7 @@ fun NowBriefingScreen(
     val viewModel = viewModel<NowViewModel>(factory = ViewModelFactories.now(container))
     val state by viewModel.uiState.collectAsState()
     val isAlarmRinging by AlarmEventBus.isRinging.collectAsState()
+    val activeAlarm by AlarmEventBus.activeAlarm.collectAsState()
 
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -149,26 +150,57 @@ fun NowBriefingScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
+                Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        "Briefing alarm active — reading today's schedule",
+                        text = if (activeAlarm.isTaskAlarm && activeAlarm.taskTitle.isNotBlank()) {
+                            "Task due now: ${activeAlarm.taskTitle}"
+                        } else {
+                            "Briefing alarm active — reading today's schedule"
+                        },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.weight(1f)
+                        color = MaterialTheme.colorScheme.onErrorContainer
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = { AlarmService.dismissAlarm(context) },
-                        modifier = Modifier.testTag("dismiss_alarm_button")
+                    if (activeAlarm.isTaskAlarm && activeAlarm.taskNotes.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = activeAlarm.taskNotes,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Filled.AlarmOff, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Dismiss")
+                        if (activeAlarm.isTaskAlarm) {
+                            OutlinedButton(
+                                onClick = {
+                                    AlarmService.snoozeAlarm(
+                                        context = context,
+                                        taskId = activeAlarm.taskId,
+                                        taskTitle = activeAlarm.taskTitle,
+                                        taskNotes = activeAlarm.taskNotes
+                                    )
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("snooze_alarm_button")
+                            ) {
+                                Text("Snooze 5m")
+                            }
+                        }
+                        Button(
+                            onClick = { AlarmService.dismissAlarm(context) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("dismiss_alarm_button")
+                        ) {
+                            Icon(Icons.Filled.AlarmOff, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Dismiss")
+                        }
                     }
                 }
             }

@@ -24,6 +24,7 @@ import com.adhdcompanion.focus.model.DayBlock
 import com.adhdcompanion.focus.notification.NotificationHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -40,9 +41,10 @@ data class TtsAvailabilityStatus(
 
 /**
  * Foreground media-playback service that holds a partial WakeLock, plays the
- * default system alarm sound on USAGE_ALARM at ducked background volume, waits
- * for TextToSpeech initialization, reads ALL of today's Room blocks aloud in
- * max-length-safe chunks via QUEUE_ADD, and runs continuously until dismissed.
+ * default system alarm sound on USAGE_ALARM at ducked background volume, announces
+ * individual due tasks via GeminiVoiceReminderEngine (when online) with immediate
+ * fallback to Android TextToSpeech on USAGE_ALARM, or reads the full daily schedule
+ * aloud, and cleans up all WakeLocks and foreground state on dismiss or snooze.
  */
 class AlarmService : Service() {
 
@@ -55,31 +57,121 @@ class AlarmService : Service() {
     private var isTtsReady = false
     private var isDismissed = false
 
+    private var geminiVoiceEngine: GeminiVoiceReminderEngine? = null
+    private var activeAnnouncementJob: Job? = null
+
     private var currentLabel: String = "Morning focus briefing"
     private var shouldAutoSpeak: Boolean = true
     private var pendingScheduleChunks: List<String> = emptyList()
+
+    private var currentTaskId: Long = -1L
+    private var currentTaskTitle: String = ""
+    private var currentTaskNotes: String = ""
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action ?: ACTION_START_ALARM
-        if (action == ACTION_DISMISS_ALARM) {
-            dismissAndStop()
-            return START_NOT_STICKY
-        }
+        when (action) {
+            ACTION_DISMISS_ALARM -> {
+                dismissAndStop()
+                return START_NOT_STICKY
+            }
 
+            ACTION_SNOOZE_ALARM -> {
+                val taskId = intent?.getLongExtra(TaskAlarmScheduler.EXTRA_TASK_ID, -1L)
+                    ?.takeIf { it > 0L } ?: currentTaskId
+                val taskTitle = intent?.getStringExtra(TaskAlarmScheduler.EXTRA_TASK_TITLE)
+                    ?.takeIf { it.isNotBlank() } ?: currentTaskTitle.ifBlank { currentLabel }
+                val taskNotes = intent?.getStringExtra(TaskAlarmScheduler.EXTRA_TASK_NOTES)
+                    ?.takeIf { it.isNotBlank() } ?: currentTaskNotes
+                val snoozeMinutes = intent?.getIntExtra(
+                    EXTRA_SNOOZE_MINUTES,
+                    TaskAlarmScheduler.DEFAULT_SNOOZE_MINUTES
+                ) ?: TaskAlarmScheduler.DEFAULT_SNOOZE_MINUTES
+
+                if (taskTitle.isNotBlank()) {
+                    TaskAlarmScheduler(applicationContext).scheduleSnooze(
+                        taskId = taskId,
+                        taskTitle = taskTitle,
+                        taskNotes = taskNotes,
+                        snoozeMinutes = snoozeMinutes
+                    )
+                }
+                dismissAndStop()
+                return START_NOT_STICKY
+            }
+
+            ACTION_START_TASK_ALARM -> {
+                handleStartTaskAlarm(intent)
+                return START_NOT_STICKY
+            }
+
+            else -> {
+                handleStartMorningAlarm(intent)
+                return START_NOT_STICKY
+            }
+        }
+    }
+
+    private fun handleStartTaskAlarm(intent: Intent?) {
+        resetActiveSpeech()
         isDismissed = false
+
+        currentTaskId = intent?.getLongExtra(TaskAlarmScheduler.EXTRA_TASK_ID, -1L) ?: -1L
+        currentTaskTitle = intent?.getStringExtra(TaskAlarmScheduler.EXTRA_TASK_TITLE)
+            ?.takeIf { it.isNotBlank() }
+            ?: "Scheduled focus task"
+        currentTaskNotes = intent?.getStringExtra(TaskAlarmScheduler.EXTRA_TASK_NOTES).orEmpty()
+        currentLabel = currentTaskTitle
+        shouldAutoSpeak = true
+
+        val notification = NotificationHelper.buildAlarmNotification(
+            context = this,
+            title = "Task Due: $currentTaskTitle",
+            body = currentTaskNotes.ifBlank { "It's time to start your scheduled task." },
+            autoSpeak = true,
+            taskId = currentTaskId,
+            taskTitle = currentTaskTitle,
+            taskNotes = currentTaskNotes,
+            includeSnoozeAction = true
+        )
+        startForegroundMediaPlayback(notification)
+        acquireWakeLock()
+        AlarmEventBus.setActiveTaskAlarm(currentTaskId, currentTaskTitle, currentTaskNotes)
+        startLoopingAlarmTone()
+        announceDueTask(currentTaskTitle, currentTaskNotes)
+    }
+
+    private fun handleStartMorningAlarm(intent: Intent?) {
+        resetActiveSpeech()
+        isDismissed = false
+
+        currentTaskId = -1L
+        currentTaskTitle = ""
+        currentTaskNotes = ""
         currentLabel = intent?.getStringExtra(EXTRA_LABEL)?.takeIf { it.isNotBlank() }
             ?: "Morning focus briefing"
         shouldAutoSpeak = intent?.getBooleanExtra(EXTRA_AUTO_SPEAK, true) ?: true
 
-        // 1. Immediately enter foreground with mediaPlayback type so Android/HyperOS keeps audio alive
         val notification = NotificationHelper.buildAlarmNotification(
             context = this,
             title = "Focus Companion Alarm",
             body = currentLabel,
-            autoSpeak = shouldAutoSpeak
+            autoSpeak = shouldAutoSpeak,
+            includeSnoozeAction = false
         )
+        startForegroundMediaPlayback(notification)
+        acquireWakeLock()
+        AlarmEventBus.setRinging(true)
+        startLoopingAlarmTone()
+
+        if (shouldAutoSpeak) {
+            prepareAndSpeakFullSchedule()
+        }
+    }
+
+    private fun startForegroundMediaPlayback(notification: android.app.Notification) {
         ServiceCompat.startForeground(
             this,
             NotificationHelper.ALARM_NOTIFICATION_ID,
@@ -90,22 +182,14 @@ class AlarmService : Service() {
                 0
             }
         )
+    }
 
-        // 2. Hold partial WakeLock until dismissed
-        acquireWakeLock()
-
-        // 3. Notify UI that alarm is actively ringing
-        AlarmEventBus.setRinging(true)
-
-        // 4. Start looping default system alarm audio at ducked volume on USAGE_ALARM
-        startLoopingAlarmTone()
-
-        // 5. Fetch full schedule from Room and speak via TextToSpeech on USAGE_ALARM
-        if (shouldAutoSpeak) {
-            prepareAndSpeakFullSchedule()
-        }
-
-        return START_NOT_STICKY
+    private fun resetActiveSpeech() {
+        activeAnnouncementJob?.cancel()
+        activeAnnouncementJob = null
+        pendingScheduleChunks = emptyList()
+        geminiVoiceEngine?.stop()
+        runCatching { tts?.stop() }
     }
 
     private fun acquireWakeLock() {
@@ -117,7 +201,6 @@ class AlarmService : Service() {
             "ADHDFocusCompanion:AlarmServiceWakeLock"
         ).apply {
             setReferenceCounted(false)
-            // 30-minute safety cap; explicitly released on dismiss/destroy
             acquire(30 * 60_000L)
         }
     }
@@ -173,9 +256,42 @@ class AlarmService : Service() {
         mediaPlayer = null
     }
 
+    private fun announceDueTask(taskTitle: String, taskNotes: String) {
+        val announcementText = formatTaskReminderForSpeech(taskTitle, taskNotes)
+        val engine = geminiVoiceEngine ?: GeminiVoiceReminderEngine(applicationContext).also {
+            geminiVoiceEngine = it
+        }
+
+        // Pre-warm local TextToSpeech in parallel so fallback is instant if Gemini fails or is offline
+        ensureTtsInitialized()
+
+        activeAnnouncementJob = serviceScope.launch {
+            val startedGemini = engine.speakTaskReminder(
+                spokenText = announcementText,
+                onFinished = {
+                    mainHandler.post {
+                        if (!isDismissed) {
+                            runCatching { mediaPlayer?.setVolume(0.42f, 0.42f) }
+                        }
+                    }
+                },
+                onPlaybackError = {
+                    mainHandler.post {
+                        if (!isDismissed) {
+                            speakTextViaLocalTts(announcementText)
+                        }
+                    }
+                }
+            )
+            if (!startedGemini && !isDismissed) {
+                speakTextViaLocalTts(announcementText)
+            }
+        }
+    }
+
     private fun prepareAndSpeakFullSchedule() {
         ensureTtsInitialized()
-        serviceScope.launch {
+        activeAnnouncementJob = serviceScope.launch {
             val blocks = withContext(Dispatchers.IO) {
                 val todayEpoch = LocalDate.now(ZoneId.systemDefault()).toEpochDay()
                 AppDatabase.getInstance(applicationContext)
@@ -187,15 +303,22 @@ class AlarmService : Service() {
             if (isDismissed) return@launch
 
             val fullScript = formatFullScheduleForSpeech(currentLabel, blocks)
-            val maxLen = runCatching { TextToSpeech.getMaxSpeechInputLength() }
-                .getOrDefault(3500)
-                .coerceAtLeast(300)
-            val chunks = splitIntoSpeechChunks(fullScript, (maxLen - 40).coerceAtLeast(250))
+            speakTextViaLocalTts(fullScript)
+        }
+    }
 
-            pendingScheduleChunks = chunks
-            if (isTtsReady) {
-                queueChunksOnTts(chunks)
-            }
+    private fun speakTextViaLocalTts(text: String) {
+        if (isDismissed || text.isBlank()) return
+        ensureTtsInitialized()
+
+        val maxLen = runCatching { TextToSpeech.getMaxSpeechInputLength() }
+            .getOrDefault(3500)
+            .coerceAtLeast(300)
+        val chunks = splitIntoSpeechChunks(text, (maxLen - 40).coerceAtLeast(250))
+
+        pendingScheduleChunks = chunks
+        if (isTtsReady) {
+            queueChunksOnTts(chunks)
         }
     }
 
@@ -231,7 +354,6 @@ class AlarmService : Service() {
                 } else {
                     isTtsReady = false
                     Log.e(TAG, "TextToSpeech failed to initialize (status=$status); keeping alarm tone active")
-                    // Restore normal volume on alarm tone if TTS unavailable
                     runCatching { mediaPlayer?.setVolume(0.85f, 0.85f) }
                 }
             }
@@ -250,7 +372,6 @@ class AlarmService : Service() {
 
             override fun onDone(utteranceId: String?) {
                 if (utteranceId == lastUtteranceId && !isDismissed) {
-                    // Schedule finished speaking; keep soft alarm tone looping until dismissed
                     runCatching { mediaPlayer?.setVolume(0.42f, 0.42f) }
                 }
             }
@@ -265,7 +386,6 @@ class AlarmService : Service() {
             }
         })
 
-        // Flush any old speech once, then queue all schedule chunks with QUEUE_ADD
         engine.stop()
         val params = Bundle()
         chunks.forEachIndexed { index, chunk ->
@@ -275,7 +395,7 @@ class AlarmService : Service() {
 
     private fun dismissAndStop() {
         isDismissed = true
-        pendingScheduleChunks = emptyList()
+        resetActiveSpeech()
         stopMediaPlayer()
         tts?.let { engine ->
             runCatching { engine.stop() }
@@ -283,6 +403,7 @@ class AlarmService : Service() {
         }
         tts = null
         isTtsReady = false
+        geminiVoiceEngine = null
         AlarmEventBus.setRinging(false)
         NotificationHelper.cancelAlarmNotification(this)
         releaseWakeLock()
@@ -292,6 +413,7 @@ class AlarmService : Service() {
 
     override fun onDestroy() {
         isDismissed = true
+        resetActiveSpeech()
         stopMediaPlayer()
         tts?.let { engine ->
             runCatching { engine.stop() }
@@ -299,7 +421,9 @@ class AlarmService : Service() {
         }
         tts = null
         isTtsReady = false
+        geminiVoiceEngine = null
         AlarmEventBus.setRinging(false)
+        NotificationHelper.cancelAlarmNotification(this)
         releaseWakeLock()
         serviceScope.cancel()
         mainHandler.removeCallbacksAndMessages(null)
@@ -311,9 +435,12 @@ class AlarmService : Service() {
         private const val DUCKED_ALARM_VOLUME = 0.16f
 
         const val ACTION_START_ALARM = "com.adhdcompanion.focus.alarm.ACTION_START_ALARM"
+        const val ACTION_START_TASK_ALARM = "com.adhdcompanion.focus.alarm.ACTION_START_TASK_ALARM"
         const val ACTION_DISMISS_ALARM = "com.adhdcompanion.focus.alarm.ACTION_DISMISS_ALARM"
+        const val ACTION_SNOOZE_ALARM = "com.adhdcompanion.focus.alarm.ACTION_SNOOZE_ALARM"
         const val EXTRA_LABEL = "extra_label"
         const val EXTRA_AUTO_SPEAK = "extra_auto_speak"
+        const val EXTRA_SNOOZE_MINUTES = "extra_snooze_minutes"
 
         fun startAlarm(context: Context, label: String, autoSpeak: Boolean) {
             val intent = Intent(context, AlarmService::class.java).apply {
@@ -324,6 +451,45 @@ class AlarmService : Service() {
             ContextCompat.startForegroundService(context.applicationContext, intent)
         }
 
+        fun startTaskAlarm(
+            context: Context,
+            taskId: Long,
+            taskTitle: String,
+            taskNotes: String
+        ) {
+            val intent = Intent(context, AlarmService::class.java).apply {
+                action = ACTION_START_TASK_ALARM
+                putExtra(TaskAlarmScheduler.EXTRA_TASK_ID, taskId)
+                putExtra(TaskAlarmScheduler.EXTRA_TASK_TITLE, taskTitle)
+                putExtra(TaskAlarmScheduler.EXTRA_TASK_NOTES, taskNotes)
+            }
+            ContextCompat.startForegroundService(context.applicationContext, intent)
+        }
+
+        fun snoozeAlarm(
+            context: Context,
+            taskId: Long = -1L,
+            taskTitle: String = "",
+            taskNotes: String = "",
+            snoozeMinutes: Int = TaskAlarmScheduler.DEFAULT_SNOOZE_MINUTES
+        ) {
+            val appCtx = context.applicationContext
+            val active = AlarmEventBus.activeAlarm.value
+            val resolvedId = if (taskId > 0L) taskId else active.taskId
+            val resolvedTitle = taskTitle.ifBlank { active.taskTitle }
+            val resolvedNotes = taskNotes.ifBlank { active.taskNotes }
+
+            if (resolvedTitle.isNotBlank()) {
+                TaskAlarmScheduler(appCtx).scheduleSnooze(
+                    taskId = resolvedId,
+                    taskTitle = resolvedTitle,
+                    taskNotes = resolvedNotes,
+                    snoozeMinutes = snoozeMinutes
+                )
+            }
+            dismissAlarm(appCtx)
+        }
+
         fun dismissAlarm(context: Context) {
             val appCtx = context.applicationContext
             AlarmEventBus.setRinging(false)
@@ -331,6 +497,19 @@ class AlarmService : Service() {
             AlarmSoundPlayer.stopLocalOnly()
             val stopIntent = Intent(appCtx, AlarmService::class.java)
             runCatching { appCtx.stopService(stopIntent) }
+        }
+
+        internal fun formatTaskReminderForSpeech(taskTitle: String, taskNotes: String): String {
+            return buildString {
+                append("It is time for your scheduled task: ")
+                append(taskTitle.trim().trimEnd('.'))
+                append(". ")
+                if (taskNotes.isNotBlank()) {
+                    append(taskNotes.trim().trimEnd('.'))
+                    append(". ")
+                }
+                append("Take one calm breath and start with just the first tiny step. Tap dismiss or snooze whenever you are ready.")
+            }
         }
 
         internal fun formatFullScheduleForSpeech(label: String, blocks: List<DayBlock>): String {
@@ -376,7 +555,6 @@ class AlarmService : Service() {
                     break
                 }
 
-                // Prefer breaking at sentence boundary, then space
                 val sentenceBreak = maxOf(
                     trimmed.lastIndexOf(". ", hardEnd - 1),
                     trimmed.lastIndexOf("! ", hardEnd - 1),

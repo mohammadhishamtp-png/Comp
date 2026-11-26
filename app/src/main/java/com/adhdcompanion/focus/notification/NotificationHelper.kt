@@ -92,7 +92,11 @@ object NotificationHelper {
         context: Context,
         title: String,
         body: String,
-        autoSpeak: Boolean
+        autoSpeak: Boolean,
+        taskId: Long = -1L,
+        taskTitle: String = "",
+        taskNotes: String = "",
+        includeSnoozeAction: Boolean = false
     ): android.app.Notification {
         ensureChannel(context)
 
@@ -118,7 +122,7 @@ object NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(context, ALARM_CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, ALARM_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(title)
             .setContentText(body)
@@ -131,7 +135,27 @@ object NotificationHelper {
             .setContentIntent(contentPendingIntent)
             .addAction(0, "Open Now", contentPendingIntent)
             .addAction(0, "Dismiss", dismissPendingIntent)
-            .build()
+
+        if (includeSnoozeAction) {
+            val snoozeIntent = Intent(context, AlarmReceiver::class.java).apply {
+                action = AlarmReceiver.ACTION_SNOOZE_ALARM
+                putExtra(com.adhdcompanion.focus.alarm.TaskAlarmScheduler.EXTRA_TASK_ID, taskId)
+                putExtra(
+                    com.adhdcompanion.focus.alarm.TaskAlarmScheduler.EXTRA_TASK_TITLE,
+                    taskTitle.ifBlank { title }
+                )
+                putExtra(com.adhdcompanion.focus.alarm.TaskAlarmScheduler.EXTRA_TASK_NOTES, taskNotes)
+            }
+            val snoozePendingIntent = PendingIntent.getBroadcast(
+                context,
+                ALARM_NOTIFICATION_ID + 2,
+                snoozeIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(0, "Snooze 5m", snoozePendingIntent)
+        }
+
+        return builder.build()
     }
 
     fun showAlarmNotification(

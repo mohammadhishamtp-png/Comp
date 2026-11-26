@@ -5,11 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.os.PowerManager
 import com.adhdcompanion.focus.blocker.FocusLockManager
-import com.adhdcompanion.focus.notification.NotificationHelper
 
 /**
- * Handles morning briefing alarms, test alarms, dismiss actions, and
- * scheduled focus-lock window boundary evaluations.
+ * Handles morning briefing alarms, test alarms, notification dismiss/snooze actions,
+ * and scheduled focus-lock window boundary evaluations.
  */
 class AlarmReceiver : BroadcastReceiver() {
 
@@ -17,6 +16,19 @@ class AlarmReceiver : BroadcastReceiver() {
         when (intent.action) {
             ACTION_DISMISS_ALARM -> {
                 AlarmService.dismissAlarm(context)
+                return
+            }
+
+            ACTION_SNOOZE_ALARM -> {
+                val taskId = intent.getLongExtra(TaskAlarmScheduler.EXTRA_TASK_ID, -1L)
+                val taskTitle = intent.getStringExtra(TaskAlarmScheduler.EXTRA_TASK_TITLE).orEmpty()
+                val taskNotes = intent.getStringExtra(TaskAlarmScheduler.EXTRA_TASK_NOTES).orEmpty()
+                AlarmService.snoozeAlarm(
+                    context = context,
+                    taskId = taskId,
+                    taskTitle = taskTitle,
+                    taskNotes = taskNotes
+                )
                 return
             }
 
@@ -71,6 +83,7 @@ class AlarmReceiver : BroadcastReceiver() {
         const val ACTION_TEST_ALARM = "com.adhdcompanion.focus.ACTION_TEST_ALARM"
         const val ACTION_TRANSITION_ALARM = "com.adhdcompanion.focus.ACTION_TRANSITION_ALARM"
         const val ACTION_DISMISS_ALARM = "com.adhdcompanion.focus.ACTION_DISMISS_ALARM"
+        const val ACTION_SNOOZE_ALARM = "com.adhdcompanion.focus.ACTION_SNOOZE_ALARM"
         const val ACTION_EVALUATE_LOCK_WINDOWS = "com.adhdcompanion.focus.ACTION_EVALUATE_LOCK_WINDOWS"
 
         const val EXTRA_LABEL = "extra_label"

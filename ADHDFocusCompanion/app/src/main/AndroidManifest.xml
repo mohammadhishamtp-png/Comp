@@ -85,7 +85,12 @@
             android:exported="false" />
 
         <receiver
-            android:name=".alarm.BootCompletedReceiver"
+            android:name=".alarm.TaskAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".alarm.BootReceiver"
+            android:enabled="false"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

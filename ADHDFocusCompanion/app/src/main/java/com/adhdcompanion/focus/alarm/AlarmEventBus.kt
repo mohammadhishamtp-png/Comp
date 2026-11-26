@@ -17,7 +17,19 @@ import kotlinx.coroutines.flow.asStateFlow
 data class AlarmTriggerEvent(
     val label: String,
     val autoSpeak: Boolean,
+    val isTaskAlarm: Boolean = false,
+    val taskId: Long = -1L,
+    val taskTitle: String = "",
+    val taskNotes: String = "",
     val triggeredAtMillis: Long = System.currentTimeMillis()
+)
+
+data class ActiveAlarmState(
+    val isRinging: Boolean = false,
+    val isTaskAlarm: Boolean = false,
+    val taskId: Long = -1L,
+    val taskTitle: String = "",
+    val taskNotes: String = ""
 )
 
 object AlarmEventBus {
@@ -27,12 +39,31 @@ object AlarmEventBus {
     private val _isRinging = MutableStateFlow(false)
     val isRinging: StateFlow<Boolean> = _isRinging.asStateFlow()
 
+    private val _activeAlarm = MutableStateFlow(ActiveAlarmState())
+    val activeAlarm: StateFlow<ActiveAlarmState> = _activeAlarm.asStateFlow()
+
     fun emit(event: AlarmTriggerEvent) {
         _events.tryEmit(event)
     }
 
     fun setRinging(ringing: Boolean) {
         _isRinging.value = ringing
+        if (ringing) {
+            _activeAlarm.value = ActiveAlarmState(isRinging = true)
+        } else {
+            _activeAlarm.value = ActiveAlarmState()
+        }
+    }
+
+    fun setActiveTaskAlarm(taskId: Long, taskTitle: String, taskNotes: String) {
+        _isRinging.value = true
+        _activeAlarm.value = ActiveAlarmState(
+            isRinging = true,
+            isTaskAlarm = true,
+            taskId = taskId,
+            taskTitle = taskTitle,
+            taskNotes = taskNotes
+        )
     }
 }
 

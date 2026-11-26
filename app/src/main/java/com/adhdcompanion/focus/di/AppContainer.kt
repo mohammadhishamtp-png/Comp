@@ -1,6 +1,7 @@
 package com.adhdcompanion.focus.di
 
 import android.content.Context
+import com.adhdcompanion.focus.alarm.TaskAlarmScheduler
 import com.adhdcompanion.focus.blocker.FocusLockManager
 import com.adhdcompanion.focus.data.ai.HybridDoubtEngine
 import com.adhdcompanion.focus.data.ai.LocalLiteRtEngine
@@ -26,12 +27,14 @@ class AppContainer(context: Context) {
 
     val focusLockManager: FocusLockManager by lazy { FocusLockManager.getInstance(appContext) }
 
+    val taskAlarmScheduler: TaskAlarmScheduler by lazy { TaskAlarmScheduler(appContext) }
+
     private val database: AppDatabase by lazy { AppDatabase.getInstance(appContext) }
 
     private val cloudSync = NoOpCloudSync()
 
     val blockRepository: BlockRepository by lazy {
-        BlockRepository(database.blockDao(), cloudSync)
+        BlockRepository(database.blockDao(), cloudSync, taskAlarmScheduler)
     }
 
     val brainDumpRepository: BrainDumpRepository by lazy {

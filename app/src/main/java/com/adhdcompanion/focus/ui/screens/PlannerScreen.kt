@@ -50,11 +50,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.adhdcompanion.focus.alarm.TaskAlarmScheduler
 import com.adhdcompanion.focus.di.AppContainer
 import com.adhdcompanion.focus.model.BlockCategory
 import com.adhdcompanion.focus.model.DayBlock
@@ -69,6 +71,10 @@ fun PlannerScreen(container: AppContainer) {
     val viewModel = viewModel<PlannerViewModel>(factory = ViewModelFactories.planner(container))
     val state by viewModel.uiState.collectAsState()
     val blocks by viewModel.todaysBlocks.collectAsState()
+    val context = LocalContext.current
+    val canScheduleExact = remember(container) {
+        container.taskAlarmScheduler.canScheduleExactAlarms()
+    }
 
     var editingBlock by remember { mutableStateOf<DayBlock?>(null) }
     var showBlockDialog by remember { mutableStateOf(false) }
@@ -82,10 +88,40 @@ fun PlannerScreen(container: AppContainer) {
         Text("Day planner", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
         Text(
-            "Tell the AI your hours, energy, and goals — or add/edit blocks directly. Everything saves straight to Room.",
+            "Tell the AI your hours, energy, and goals — or add/edit blocks directly. Everything saves straight to Room and schedules exact voice reminders.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        if (!canScheduleExact) {
+            Spacer(Modifier.height(12.dp))
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        "Allow exact alarms so every task announces on time.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            context.startActivity(TaskAlarmScheduler.requestExactAlarmPermissionIntent(context))
+                        },
+                        modifier = Modifier.testTag("grant_exact_alarm_button")
+                    ) {
+                        Text("Allow")
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(20.dp))
 
         OutlinedTextField(

@@ -92,6 +92,7 @@ class AlarmScheduler(private val context: Context) {
         )
 
         scheduleAsAlarmClock(calendar.timeInMillis, showIntent, operationPendingIntent)
+        TaskAlarmScheduler(context).setBootReceiverEnabled(true)
     }
 
     /** Schedules a short test alarm (default 5 seconds) using setAlarmClock so users can test audio + spoken briefing. */
