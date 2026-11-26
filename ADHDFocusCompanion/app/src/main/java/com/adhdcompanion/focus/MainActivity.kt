@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.adhdcompanion.focus.alarm.AlarmEventBus
 import com.adhdcompanion.focus.alarm.AlarmSoundPlayer
+import com.adhdcompanion.focus.blocker.FocusBlockerAccessibilityService
 import com.adhdcompanion.focus.navigation.AppNavigation
 import com.adhdcompanion.focus.navigation.BlockedRedirectPrompt
 import com.adhdcompanion.focus.notification.NotificationHelper
@@ -62,6 +63,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        FocusBlockerAccessibilityService.setMainActivityResumed(true)
+    }
+
+    override fun onPause() {
+        FocusBlockerAccessibilityService.setMainActivityResumed(false)
+        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent) {

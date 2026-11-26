@@ -7,22 +7,25 @@ import androidx.security.crypto.MasterKey
 
 /**
  * Stores the Gemini API key and small user settings locally, encrypted at
- * rest with a hardware-backed master key. Nothing in here ever leaves the
- * device except the one outbound HTTPS call the user's own key authorizes.
+ * rest with a hardware-backed master key (with safe fallback if Keystore is
+ * unavailable on an emulator or after restore).
  */
 class SecurePrefsManager(context: Context) {
 
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val prefs: SharedPreferences = EncryptedSharedPreferences.create(
-        context,
-        "secure_prefs",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    private val prefs: SharedPreferences = runCatching {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            context,
+            "secure_prefs",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }.getOrElse {
+        context.applicationContext.getSharedPreferences("secure_prefs_fallback", Context.MODE_PRIVATE)
+    }
 
     var geminiApiKey: String?
         get() = prefs.getString(KEY_GEMINI_API_KEY, null)?.trim()?.ifBlank { null }

@@ -150,7 +150,8 @@ class FocusLockManager private constructor(context: Context) {
     fun evaluateNow(nowMillis: Long = System.currentTimeMillis()): LockEvaluationState {
         val current = _config.value
         if ((current.unlockCooldownEndMillis > 0L && nowMillis >= current.unlockCooldownEndMillis) ||
-            (current.temporaryUnlockUntilMillis > 0L && nowMillis >= current.temporaryUnlockUntilMillis)
+            (current.temporaryUnlockUntilMillis > 0L && nowMillis >= current.temporaryUnlockUntilMillis) ||
+            (current.quickLockUntilMillis > 0L && nowMillis >= current.quickLockUntilMillis)
         ) {
             return evaluateAndSyncState(appContext)
         }
@@ -463,7 +464,9 @@ class FocusLockManager private constructor(context: Context) {
         val seen = HashSet<String>()
         val results = mutableListOf<InstalledAppInfo>()
         for (info in resolveInfos) {
-            val pkg = info.activityInfo?.packageName ?: continue
+            val pkg = info.activityInfo?.applicationInfo?.packageName
+                ?: info.activityInfo?.packageName
+                ?: continue
             if (pkg == appContext.packageName || !seen.add(pkg)) continue
             val label = info.loadLabel(pm)?.toString()?.takeIf { it.isNotBlank() } ?: pkg
             results.add(InstalledAppInfo(packageName = pkg, label = label))
