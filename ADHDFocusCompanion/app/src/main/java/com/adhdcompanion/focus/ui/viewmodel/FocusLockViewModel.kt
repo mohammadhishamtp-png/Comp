@@ -28,6 +28,7 @@ data class FocusLockUiState(
     val installedApps: List<InstalledAppInfo> = emptyList(),
     val isLoadingApps: Boolean = true,
     val appSearchQuery: String = "",
+    val nextScheduledWindowLabel: String? = null,
     val feedbackMessage: String? = null
 )
 
@@ -59,9 +60,13 @@ class FocusLockViewModel(
             ) { config, now ->
                 config to lockManager.evaluateNow(now)
             }.collect { (config, eval) ->
+                val nextLabel = if (!eval.isInScheduledWindow) {
+                    lockManager.describeNextWindowStart()
+                } else null
                 _uiState.value = _uiState.value.copy(
                     config = config,
-                    evaluation = eval
+                    evaluation = eval,
+                    nextScheduledWindowLabel = nextLabel
                 )
             }
         }
@@ -176,6 +181,21 @@ class FocusLockViewModel(
     fun relockNow() {
         lockManager.relockImmediately()
         _uiState.value = _uiState.value.copy(feedbackMessage = "Focus lock re-armed.")
+    }
+
+    fun startQuickLock(durationMinutes: Int) {
+        val cfg = _uiState.value.config
+        if (cfg.mode == LockMode.BLOCK_LIST && cfg.selectedPackages.isEmpty()) {
+            _uiState.value = _uiState.value.copy(
+                feedbackMessage = "Pick at least 1 distracting app below before starting Quick Lock."
+            )
+            return
+        }
+        lockManager.startQuickLockWindow(durationMinutes)
+        val label = if (durationMinutes >= 60) "${durationMinutes / 60}h" else "${durationMinutes}m"
+        _uiState.value = _uiState.value.copy(
+            feedbackMessage = "Quick Focus Lock active for $label."
+        )
     }
 
     fun clearFeedback() {

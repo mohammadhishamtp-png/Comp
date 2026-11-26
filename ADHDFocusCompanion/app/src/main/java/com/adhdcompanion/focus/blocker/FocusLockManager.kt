@@ -105,6 +105,12 @@ class FocusLockManager private constructor(context: Context) {
             mutated = true
         }
 
+        // Clear expired 1-tap quick lock
+        if (current.quickLockUntilMillis > 0L && now >= current.quickLockUntilMillis) {
+            current = current.copy(quickLockUntilMillis = 0L)
+            mutated = true
+        }
+
         if (mutated) {
             saveConfig(current)
         } else {
@@ -195,6 +201,23 @@ class FocusLockManager private constructor(context: Context) {
         return evaluateAndSyncState(appContext)
     }
 
+    @Synchronized
+    fun startQuickLockWindow(durationMinutes: Int): LockEvaluationState {
+        val now = System.currentTimeMillis()
+        val safeMinutes = durationMinutes.coerceIn(5, 8 * 60)
+        val endMillis = now + safeMinutes * 60_000L
+        val current = _config.value
+        saveConfig(
+            current.copy(
+                isMasterEnabled = true,
+                unlockCooldownEndMillis = 0L,
+                temporaryUnlockUntilMillis = 0L,
+                quickLockUntilMillis = maxOf(current.quickLockUntilMillis, endMillis)
+            )
+        )
+        return evaluateAndSyncState(appContext)
+    }
+
     fun isPackageBlockedNow(packageName: String, essentialPackages: Set<String>): Boolean {
         if (packageName.isBlank() || packageName == appContext.packageName) return false
         if (packageName in essentialPackages) return false
@@ -251,9 +274,21 @@ class FocusLockManager private constructor(context: Context) {
         if (!cfg.isMasterEnabled) {
             return LockEvaluationState(isInScheduledWindow = false, isBlockingActive = false)
         }
-        val activeWindow = findActiveWindow(cfg.windows, nowMillis)
-        val inWindow = activeWindow != null
-        if (!inWindow) {
+        val scheduledWindow = findActiveWindow(cfg.windows, nowMillis)
+        val hasQuickLock = cfg.quickLockUntilMillis > nowMillis
+        val activeWindow = when {
+            hasQuickLock && scheduledWindow == null -> buildQuickLockWindow(cfg.quickLockUntilMillis, nowMillis)
+            hasQuickLock && scheduledWindow != null -> {
+                val scheduledEndMs = computeWindowEndMillis(scheduledWindow, nowMillis)
+                if (cfg.quickLockUntilMillis > scheduledEndMs) {
+                    buildQuickLockWindow(cfg.quickLockUntilMillis, nowMillis)
+                } else {
+                    scheduledWindow
+                }
+            }
+            else -> scheduledWindow
+        }
+        if (activeWindow == null) {
             return LockEvaluationState(isInScheduledWindow = false, isBlockingActive = false)
         }
 
@@ -276,6 +311,37 @@ class FocusLockManager private constructor(context: Context) {
             isTemporaryUnlocked = isTempUnlocked,
             tempUnlockRemainingSeconds = tempRemainingSec
         )
+    }
+
+    private fun buildQuickLockWindow(endMillis: Long, nowMillis: Long): FocusLockWindow {
+        val zone = ZoneId.systemDefault()
+        val nowLdt = LocalDateTime.ofInstant(Instant.ofEpochMilli(nowMillis), zone)
+        val endLdt = LocalDateTime.ofInstant(Instant.ofEpochMilli(endMillis), zone)
+        return FocusLockWindow(
+            id = QUICK_LOCK_WINDOW_ID,
+            name = "Quick Focus Lock",
+            startMinuteOfDay = nowLdt.hour * 60 + nowLdt.minute,
+            endMinuteOfDay = endLdt.hour * 60 + endLdt.minute,
+            activeDays = setOf(nowLdt.dayOfWeek.value),
+            isEnabled = true
+        )
+    }
+
+    private fun computeWindowEndMillis(window: FocusLockWindow, nowMillis: Long): Long {
+        val zone = ZoneId.systemDefault()
+        val nowLdt = LocalDateTime.ofInstant(Instant.ofEpochMilli(nowMillis), zone)
+        val todayDate = nowLdt.toLocalDate()
+        val endDate = if (window.endMinuteOfDay <= window.startMinuteOfDay &&
+            (nowLdt.hour * 60 + nowLdt.minute) >= window.startMinuteOfDay
+        ) {
+            todayDate.plusDays(1)
+        } else {
+            todayDate
+        }
+        return endDate.atTime(window.endMinuteOfDay / 60, window.endMinuteOfDay % 60)
+            .atZone(zone)
+            .toInstant()
+            .toEpochMilli()
     }
 
     private fun findActiveWindow(windows: List<FocusLockWindow>, nowMillis: Long): FocusLockWindow? {
@@ -338,7 +404,45 @@ class FocusLockManager private constructor(context: Context) {
                 earliestMillis = tempEnd
             }
         }
+        if (cfg.quickLockUntilMillis > nowMillis) {
+            val quickEnd = cfg.quickLockUntilMillis
+            if (earliestMillis == null || quickEnd < earliestMillis) {
+                earliestMillis = quickEnd
+            }
+        }
         return earliestMillis
+    }
+
+    fun describeNextWindowStart(nowMillis: Long = System.currentTimeMillis()): String? {
+        val enabledWindows = _config.value.windows.filter { it.isEnabled && it.activeDays.isNotEmpty() }
+        if (enabledWindows.isEmpty()) return null
+        val zone = ZoneId.systemDefault()
+        val nowLdt = LocalDateTime.ofInstant(Instant.ofEpochMilli(nowMillis), zone)
+        var best: Pair<Long, FocusLockWindow>? = null
+        for (dayOffset in 0L..7L) {
+            val date = nowLdt.toLocalDate().plusDays(dayOffset)
+            val dow = date.dayOfWeek.value
+            for (window in enabledWindows) {
+                if (dow in window.activeDays) {
+                    val startLdt = date.atTime(window.startMinuteOfDay / 60, window.startMinuteOfDay % 60)
+                    val startMs = startLdt.atZone(zone).toInstant().toEpochMilli()
+                    if (startMs > nowMillis && (best == null || startMs < best.first)) {
+                        best = startMs to window
+                    }
+                }
+            }
+        }
+        val (bestMs, bestWindow) = best ?: return null
+        val targetLdt = LocalDateTime.ofInstant(Instant.ofEpochMilli(bestMs), zone)
+        val dayText = when (targetLdt.toLocalDate()) {
+            nowLdt.toLocalDate() -> "Today"
+            nowLdt.toLocalDate().plusDays(1) -> "Tomorrow"
+            else -> targetLdt.dayOfWeek.name.lowercase(Locale.getDefault())
+                .replaceFirstChar { it.titlecase(Locale.getDefault()) }
+                .take(3)
+        }
+        val timeText = formatMinuteOfDay(bestWindow.startMinuteOfDay)
+        return "${bestWindow.name}: $dayText at $timeText"
     }
 
     fun getInstalledLaunchableApps(): List<InstalledAppInfo> {
@@ -369,6 +473,7 @@ class FocusLockManager private constructor(context: Context) {
         private const val PREFS_NAME = "focus_lock_prefs"
         private const val KEY_CONFIG_JSON = "focus_lock_config_json"
         private const val KEY_BLOCKED_EVENTS_JSON = "blocked_app_events_json"
+        private const val QUICK_LOCK_WINDOW_ID = "quick_lock_now"
         private const val TEMP_UNLOCK_DURATION_MS = 5 * 60_000L
 
         @Volatile

@@ -291,7 +291,7 @@ fun SettingsScreen(
                 Column(Modifier.weight(1f)) {
                     Text("Use lighter fallback model", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Switch planning, doubt solving, and unblocking calls to gemini-2.5-flash-lite instead of gemini-2.5-flash.",
+                        "Prefer lighter Flash-Lite models (auto-discovers compatible models if needed).",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

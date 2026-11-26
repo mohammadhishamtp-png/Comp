@@ -71,3 +71,22 @@ data class GeminiInlineData(
     val mimeType: String?,
     val data: String? // base64-encoded audio
 )
+
+data class GeminiModelListResponse(
+    val models: List<GeminiModelInfo>?
+)
+
+data class GeminiModelInfo(
+    val name: String?,
+    val supportedGenerationMethods: List<String>?
+)
+
+data class GeminiErrorEnvelope(
+    val error: GeminiErrorDetail?
+)
+
+data class GeminiErrorDetail(
+    val code: Int?,
+    val message: String?,
+    val status: String?
+)

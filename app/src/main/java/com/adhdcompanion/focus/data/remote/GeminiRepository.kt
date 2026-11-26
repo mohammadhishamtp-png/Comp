@@ -47,12 +47,31 @@ class GeminiRepository(private val prefs: SecurePrefsManager) {
             .create(GeminiApiService::class.java)
     }
 
-    private val primaryModel = "gemini-2.5-flash"
-    private val fallbackModel = "gemini-2.5-flash-lite"
+    private val standardCandidates = listOf(
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.5-flash"
+    )
+    private val liteCandidates = listOf(
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash"
+    )
     private val ttsModel = "gemini-2.5-flash-preview-tts"
 
-    private fun activeTextModel(): String =
-        if (prefs.useFlashLiteFallbackModel) fallbackModel else primaryModel
+    private fun initialModelCandidates(): List<String> {
+        val base = if (prefs.useFlashLiteFallbackModel) liteCandidates else standardCandidates
+        val cached = prefs.resolvedTextModel
+        return if (!cached.isNullOrBlank()) {
+            (listOf(cached) + base).distinct()
+        } else {
+            base
+        }
+    }
 
     companion object {
         const val SYSTEM_PERSONA = """
@@ -254,21 +273,97 @@ Respond ONLY with JSON matching this schema:
                 responseMimeType = "application/json"
             )
         )
-        val model = activeTextModel()
-        val response = try {
-            generateWithRetry(model, apiKey, request)
-        } catch (primaryFailure: Exception) {
-            if (model != fallbackModel) {
-                generateWithRetry(fallbackModel, apiKey, request)
-            } else {
-                throw primaryFailure
+
+        val tried = LinkedHashSet<String>()
+        var lastError: Throwable? = null
+
+        for (candidate in initialModelCandidates()) {
+            tried.add(candidate)
+            try {
+                val response = generateWithRetry(candidate, apiKey, request)
+                prefs.resolvedTextModel = candidate
+                return parseJsonResponse(response)
+            } catch (e: HttpException) {
+                lastError = formatHttpException(e, candidate)
+                if (e.code() == 401 || e.code() == 403) {
+                    throw lastError
+                }
+            } catch (e: Exception) {
+                lastError = e
             }
         }
+
+        // If hardcoded candidates returned 404 (e.g. model retired or key scoped to newer Gemini models),
+        // dynamically discover valid generateContent models from GET /v1beta/models.
+        val discovered = discoverAvailableFlashModels(apiKey).filterNot { it in tried }
+        for (modelId in discovered.take(10)) {
+            tried.add(modelId)
+            try {
+                val response = generateWithRetry(modelId, apiKey, request)
+                prefs.resolvedTextModel = modelId
+                return parseJsonResponse(response)
+            } catch (e: HttpException) {
+                lastError = formatHttpException(e, modelId)
+                if (e.code() == 401 || e.code() == 403) {
+                    throw lastError
+                }
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+
+        throw lastError ?: IllegalStateException("Could not reach any Gemini model.")
+    }
+
+    private inline fun <reified T> parseJsonResponse(response: GeminiResponse): T {
         val rawText = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
             ?: throw IllegalStateException("Gemini returned no content")
         val cleanedJson = stripMarkdownFences(rawText)
         return gson.fromJson(cleanedJson, T::class.java)
             ?: throw IllegalStateException("Could not parse Gemini JSON response")
+    }
+
+    private suspend fun discoverAvailableFlashModels(apiKey: String): List<String> {
+        val preferLite = prefs.useFlashLiteFallbackModel
+        val models = runCatching { api.listModels(apiKey).models.orEmpty() }
+            .getOrElse { return emptyList() }
+
+        return models
+            .filter { info ->
+                info.supportedGenerationMethods?.contains("generateContent") == true
+            }
+            .mapNotNull { it.name?.removePrefix("models/")?.trim() }
+            .filter { id ->
+                val lower = id.lowercase()
+                lower.startsWith("gemini") &&
+                    !lower.contains("tts") &&
+                    !lower.contains("image") &&
+                    !lower.contains("audio") &&
+                    !lower.contains("embedding") &&
+                    !lower.contains("robotics") &&
+                    !lower.contains("computer-use") &&
+                    !lower.contains("aqa")
+            }
+            .sortedByDescending { id ->
+                val lower = id.lowercase()
+                var score = 0
+                if (lower.contains("flash")) score += 50
+                if (preferLite && lower.contains("lite")) score += 25
+                if (!preferLite && !lower.contains("lite")) score += 15
+                if (lower.contains("latest")) score += 10
+                if (lower.contains("-exp") || lower.contains("experimental")) score -= 20
+                if (lower.contains("pro")) score += 5
+                score
+            }
+    }
+
+    private fun formatHttpException(e: HttpException, model: String): IllegalStateException {
+        val rawBody = runCatching { e.response()?.errorBody()?.string() }.getOrNull()
+        val parsedMessage = rawBody?.let {
+            runCatching { gson.fromJson(it, GeminiErrorEnvelope::class.java)?.error?.message }.getOrNull()
+        }
+        val detail = parsedMessage ?: "HTTP ${e.code()}"
+        return IllegalStateException("Gemini error ($model): $detail", e)
     }
 
     /**
@@ -312,15 +407,15 @@ Respond ONLY with JSON matching this schema:
                 return api.generateContent(model, apiKey, request)
             } catch (e: HttpException) {
                 val retryable = e.code() == 503 || e.code() == 429 || e.code() == 500
-                if (!retryable || attempt >= 3) throw e
-                delay(1500L * (attempt + 1))
+                if (!retryable || attempt >= 2) throw e
+                delay(1200L * (attempt + 1))
                 attempt++
             }
         }
     }
 
     private fun requireApiKey(): String {
-        val key = prefs.geminiApiKey
+        val key = prefs.geminiApiKey?.trim()?.trim('"', '\'')
         require(!key.isNullOrBlank()) { "No Gemini API key set. Add one in Settings." }
         return key
     }
@@ -332,7 +427,7 @@ Respond ONLY with JSON matching this schema:
      * built-in Android TextToSpeech engine automatically.
      */
     suspend fun generateSpeechAudio(text: String): GeminiInlineData? = withContext(Dispatchers.IO) {
-        val key = prefs.geminiApiKey ?: return@withContext null
+        val key = prefs.geminiApiKey?.trim()?.trim('"', '\'') ?: return@withContext null
         runCatching {
             val request = GeminiRequest(
                 contents = listOf(GeminiContent(role = "user", parts = listOf(GeminiPart(text = text)))),

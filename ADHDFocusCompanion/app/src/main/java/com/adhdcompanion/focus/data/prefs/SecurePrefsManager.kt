@@ -25,12 +25,26 @@ class SecurePrefsManager(context: Context) {
     )
 
     var geminiApiKey: String?
-        get() = prefs.getString(KEY_GEMINI_API_KEY, null)
-        set(value) = prefs.edit().putString(KEY_GEMINI_API_KEY, value).apply()
+        get() = prefs.getString(KEY_GEMINI_API_KEY, null)?.trim()?.ifBlank { null }
+        set(value) {
+            prefs.edit()
+                .putString(KEY_GEMINI_API_KEY, value?.trim()?.ifBlank { null })
+                .remove(KEY_RESOLVED_TEXT_MODEL)
+                .apply()
+        }
 
     var useFlashLiteFallbackModel: Boolean
         get() = prefs.getBoolean(KEY_USE_FALLBACK_MODEL, false)
-        set(value) = prefs.edit().putBoolean(KEY_USE_FALLBACK_MODEL, value).apply()
+        set(value) {
+            prefs.edit()
+                .putBoolean(KEY_USE_FALLBACK_MODEL, value)
+                .remove(KEY_RESOLVED_TEXT_MODEL)
+                .apply()
+        }
+
+    var resolvedTextModel: String?
+        get() = prefs.getString(KEY_RESOLVED_TEXT_MODEL, null)?.trim()?.ifBlank { null }
+        set(value) = prefs.edit().putString(KEY_RESOLVED_TEXT_MODEL, value).apply()
 
     var userDisplayName: String?
         get() = prefs.getString(KEY_USER_NAME, null)
@@ -59,6 +73,7 @@ class SecurePrefsManager(context: Context) {
     companion object {
         private const val KEY_GEMINI_API_KEY = "gemini_api_key"
         private const val KEY_USE_FALLBACK_MODEL = "use_fallback_model"
+        private const val KEY_RESOLVED_TEXT_MODEL = "resolved_text_model"
         private const val KEY_USER_NAME = "user_display_name"
         private const val KEY_MORNING_TIME = "morning_briefing_time"
         private const val KEY_MORNING_ALARM_ENABLED = "morning_alarm_enabled"

@@ -22,9 +22,24 @@ data class GeminiPart(
 )
 
 data class GeminiGenerationConfig(
-    val temperature: Double = 0.7,
-    val maxOutputTokens: Int = 1024,
-    val responseMimeType: String? = null
+    val temperature: Double? = 0.7,
+    val maxOutputTokens: Int? = 1024,
+    val responseMimeType: String? = null,
+    /** e.g. listOf("AUDIO") for Gemini TTS requests. Null fields are omitted by Gson. */
+    val responseModalities: List<String>? = null,
+    val speechConfig: GeminiSpeechConfig? = null
+)
+
+data class GeminiSpeechConfig(
+    val voiceConfig: GeminiVoiceConfig
+)
+
+data class GeminiVoiceConfig(
+    val prebuiltVoiceConfig: GeminiPrebuiltVoiceConfig
+)
+
+data class GeminiPrebuiltVoiceConfig(
+    val voiceName: String
 )
 
 data class GeminiResponse(
@@ -55,4 +70,23 @@ data class GeminiTtsPart(
 data class GeminiInlineData(
     val mimeType: String?,
     val data: String? // base64-encoded audio
+)
+
+data class GeminiModelListResponse(
+    val models: List<GeminiModelInfo>?
+)
+
+data class GeminiModelInfo(
+    val name: String?,
+    val supportedGenerationMethods: List<String>?
+)
+
+data class GeminiErrorEnvelope(
+    val error: GeminiErrorDetail?
+)
+
+data class GeminiErrorDetail(
+    val code: Int?,
+    val message: String?,
+    val status: String?
 )

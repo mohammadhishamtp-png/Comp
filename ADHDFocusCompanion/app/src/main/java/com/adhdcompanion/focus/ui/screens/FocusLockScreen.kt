@@ -186,6 +186,104 @@ fun FocusLockScreen(
                 }
             }
 
+            Spacer(Modifier.height(14.dp))
+
+            // 1b. Live Blocker Diagnostics & 1-Tap Quick Lock
+            val appCount = state.config.selectedPackages.size
+            val noAppsSelected = state.config.mode == LockMode.BLOCK_LIST && appCount == 0
+            val statusHeadline = when {
+                !state.isAccessibilityEnabled -> "Status: Needs Accessibility Permission"
+                noAppsSelected -> "Status: Select Apps Below to Block"
+                eval.isBlockingActive -> "Status: BLOCKING LIVE NOW"
+                !state.config.isMasterEnabled -> "Status: Paused (Master Switch Off)"
+                else -> "Status: Armed & Waiting"
+            }
+            val statusDetail = when {
+                !state.isAccessibilityEnabled ->
+                    "Turn ON Focus Companion App Blocker above so Android notifies us when a distracting app opens."
+                noAppsSelected ->
+                    "0 distracting apps are checked in your Block List below. Check at least 1 app to enforce blocking."
+                eval.isBlockingActive -> {
+                    val scopeText = if (state.config.mode == LockMode.BLOCK_LIST) {
+                        "$appCount distracting app${if (appCount == 1) "" else "s"} guarded"
+                    } else {
+                        "Only $appCount allowed app${if (appCount == 1) "" else "s"} permitted"
+                    }
+                    val endText = eval.activeWindow?.let {
+                        FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay)
+                    } ?: "scheduled end"
+                    "$scopeText until $endText."
+                }
+                !state.config.isMasterEnabled ->
+                    "Enable the master switch below or tap a Quick Lock duration to block right now."
+                else ->
+                    "Current time is outside scheduled focus hours. " +
+                        (state.nextScheduledWindowLabel?.let { "Next window: $it." } ?: "Enable or add a schedule below.")
+            }
+
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (eval.isBlockingActive && state.isAccessibilityEnabled && !noAppsSelected)
+                        MaterialTheme.colorScheme.secondaryContainer
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("blocker_live_status_card")
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        text = statusHeadline,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = statusDetail,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = "Quick Lock Right Now",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { viewModel.startQuickLock(30) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("quick_lock_30m_button")
+                        ) {
+                            Text("30 min")
+                        }
+                        OutlinedButton(
+                            onClick = { viewModel.startQuickLock(60) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("quick_lock_1h_button")
+                        ) {
+                            Text("1 hour")
+                        }
+                        OutlinedButton(
+                            onClick = { viewModel.startQuickLock(120) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("quick_lock_2h_button")
+                        ) {
+                            Text("2 hours")
+                        }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(16.dp))
 
             // 2. Anti-Impulse Lock Guard / Cooldown Banner when in an active window

@@ -6,111 +6,434 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import com.adhdcompanion.focus.MainActivity
+import java.util.Locale
 
 /**
  * Detects foreground app switches during active scheduled focus lock windows
- * and immediately redirects back to Focus Companion's lock shield when a
- * distracting app opens — or when Settings/App Info/Uninstall tampering is
- * attempted against Focus Companion mid-session.
+ * (and 1-tap Quick Locks) and immediately shields the screen with a
+ * TYPE_ACCESSIBILITY_OVERLAY + redirects away from distracting apps or
+ * Settings/App Info/Uninstall tamper attempts.
  */
 class FocusBlockerAccessibilityService : AccessibilityService() {
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var windowManager: WindowManager? = null
+    private var overlayView: View? = null
+    private var overlayTitleView: TextView? = null
+    private var overlayBodyView: TextView? = null
+    private var overlayBadgeView: TextView? = null
+    private var activeShieldPackage: String? = null
+    private var activeShieldLabel: String? = null
+    private var activeShieldReason: String = REASON_BLOCKED_APP
+
     private var lastContentCheckMs = 0L
-    private var lastRedirectMs = 0L
-    private var lastRedirectedPackage: String? = null
+    private var lastLoggedMs = 0L
+    private var lastLoggedPackage: String? = null
+    private var lastHomeActionMs = 0L
+    private var homeGracePackage: String? = null
+    private var homeGraceUntilMs = 0L
     private var cachedEssentialPackages: Set<String> = emptySet()
+
+    private val watchdogRunnable = object : Runnable {
+        override fun run() {
+            val eval = FocusLockManager.getInstance(this@FocusBlockerAccessibilityService).evaluateNow()
+            if (!eval.isBlockingActive) {
+                removeOverlay()
+                return
+            }
+            if (overlayView != null) {
+                mainHandler.postDelayed(this, 1000L)
+            }
+        }
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
         cachedEssentialPackages = buildEssentialPackages()
         FocusLockManager.getInstance(this).evaluateAndSyncState(this)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
         val lockManager = FocusLockManager.getInstance(this)
         val eval = lockManager.evaluateNow()
-        if (!eval.isBlockingActive) return
+        if (!eval.isBlockingActive) {
+            removeOverlay()
+            return
+        }
+        if (event == null) return
 
         val now = SystemClock.elapsedRealtime()
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-            if (now - lastContentCheckMs < 200L) return
+            if (now - lastContentCheckMs < 150L) return
             lastContentCheckMs = now
         }
-
-        val pkg = event.packageName?.toString() ?: return
-        if (pkg == packageName) return
 
         if (cachedEssentialPackages.isEmpty()) {
             cachedEssentialPackages = buildEssentialPackages()
         }
 
-        // 1. Guard against mid-session App Info / Uninstall / Accessibility disable tampering
-        val screenTokens = mutableListOf<String>()
-        event.text?.forEach { cs ->
-            val str = cs?.toString()?.trim()
-            if (!str.isNullOrEmpty()) screenTokens.add(str)
-        }
-        if (pkg == "com.android.settings" || pkg.contains("packageinstaller")) {
-            collectNodeTexts(rootInActiveWindow, screenTokens, maxTokens = 45, depth = 0)
-        }
+        val rootNode = runCatching { rootInActiveWindow }.getOrNull()
+        val rootPkg = runCatching { rootNode?.packageName?.toString() }.getOrNull()
 
-        if (lockManager.isTamperAttempt(pkg, event.className?.toString(), screenTokens)) {
-            redirectToShield(
-                blockedPackage = pkg,
-                appLabel = "Device Settings / App Info",
-                reason = REASON_TAMPER,
-                performHomeFirst = false
-            )
+        // If the user is actively inside Focus Companion itself, ensure any overlay is cleared.
+        if (rootPkg == packageName && overlayView != null) {
+            removeOverlay()
             return
         }
 
+        val candidatePackages = collectCandidatePackages(event, rootPkg)
+        if (candidatePackages.isEmpty()) return
+
+        // 1. Guard against mid-session App Info / Uninstall / Accessibility disable tampering
+        val settingsOrInstallerPkg = candidatePackages.firstOrNull {
+            it == "com.android.settings" || it.contains("packageinstaller")
+        }
+        if (settingsOrInstallerPkg != null) {
+            val screenTokens = mutableListOf<String>()
+            event.text?.forEach { cs ->
+                val str = cs?.toString()?.trim()
+                if (!str.isNullOrEmpty()) screenTokens.add(str)
+            }
+            collectNodeTexts(rootNode, screenTokens, maxTokens = 50, depth = 0)
+            if (lockManager.isTamperAttempt(settingsOrInstallerPkg, event.className?.toString(), screenTokens)) {
+                engageShield(
+                    blockedPackage = settingsOrInstallerPkg,
+                    appLabel = "Device Settings / App Info",
+                    reason = REASON_TAMPER,
+                    windowName = eval.activeWindow?.name ?: "Focus",
+                    endText = eval.activeWindow?.let { FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay) } ?: "end of session",
+                    useHomeAction = false
+                )
+                return
+            }
+        }
+
         // 2. Block distracting foreground apps (or non-allowlisted apps in allow-list mode)
-        if (lockManager.isPackageBlockedNow(pkg, cachedEssentialPackages)) {
-            val label = lockManager.getAppLabel(pkg)
-            redirectToShield(
-                blockedPackage = pkg,
+        val blockedPkg = candidatePackages.firstOrNull { pkg ->
+            if (pkg == homeGracePackage && now < homeGraceUntilMs) {
+                false
+            } else {
+                lockManager.isPackageBlockedNow(pkg, cachedEssentialPackages)
+            }
+        }
+
+        if (blockedPkg != null) {
+            val label = lockManager.getAppLabel(blockedPkg)
+            val windowName = eval.activeWindow?.name?.ifBlank { "Focus Window" } ?: "Focus Window"
+            val endText = eval.activeWindow?.let {
+                FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay)
+            } ?: "your scheduled end time"
+
+            engageShield(
+                blockedPackage = blockedPkg,
                 appLabel = label,
                 reason = REASON_BLOCKED_APP,
-                performHomeFirst = true
+                windowName = windowName,
+                endText = endText,
+                useHomeAction = true
             )
         }
     }
 
     override fun onInterrupt() {
-        // No ongoing resources to tear down
+        removeOverlay()
     }
 
-    private fun redirectToShield(
+    override fun onUnbind(intent: Intent?): Boolean {
+        removeOverlay()
+        mainHandler.removeCallbacksAndMessages(null)
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        removeOverlay()
+        mainHandler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
+    private fun collectCandidatePackages(event: AccessibilityEvent, rootPkg: String?): List<String> {
+        val candidates = LinkedHashSet<String>()
+        event.packageName?.toString()?.takeIf { it.isNotBlank() }?.let { candidates.add(it) }
+        rootPkg?.takeIf { it.isNotBlank() }?.let { candidates.add(it) }
+
+        // Also inspect active/focused application windows via retrieveInteractiveWindows
+        runCatching { windows }.getOrNull()?.forEach { win ->
+            if (win.type == AccessibilityWindowInfo.TYPE_APPLICATION && (win.isActive || win.isFocused)) {
+                runCatching { win.root?.packageName?.toString() }
+                    .getOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { candidates.add(it) }
+            }
+        }
+        return candidates.toList()
+    }
+
+    private fun engageShield(
         blockedPackage: String,
         appLabel: String,
         reason: String,
-        performHomeFirst: Boolean
+        windowName: String,
+        endText: String,
+        useHomeAction: Boolean
     ) {
         val now = SystemClock.elapsedRealtime()
-        if (blockedPackage == lastRedirectedPackage && now - lastRedirectMs < 450L) {
-            return
+        if (blockedPackage != lastLoggedPackage || now - lastLoggedMs > 1200L) {
+            lastLoggedPackage = blockedPackage
+            lastLoggedMs = now
+            FocusLockManager.getInstance(this).recordBlockedAttempt(
+                packageName = blockedPackage,
+                appLabel = appLabel
+            )
         }
-        lastRedirectedPackage = blockedPackage
-        lastRedirectMs = now
 
-        FocusLockManager.getInstance(this).recordBlockedAttempt(
-            packageName = blockedPackage,
-            appLabel = appLabel
+        showOrUpdateOverlay(
+            blockedPackage = blockedPackage,
+            appLabel = appLabel,
+            reason = reason,
+            windowName = windowName,
+            endText = endText
         )
 
-        if (performHomeFirst) {
-            performGlobalAction(GLOBAL_ACTION_HOME)
-        } else {
-            performGlobalAction(GLOBAL_ACTION_BACK)
+        if (now - lastHomeActionMs > 500L) {
+            lastHomeActionMs = now
+            if (useHomeAction) {
+                performGlobalAction(GLOBAL_ACTION_HOME)
+            } else {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+            }
+        }
+    }
+
+    private fun showOrUpdateOverlay(
+        blockedPackage: String,
+        appLabel: String,
+        reason: String,
+        windowName: String,
+        endText: String
+    ) {
+        mainHandler.post {
+            activeShieldPackage = blockedPackage
+            activeShieldLabel = appLabel
+            activeShieldReason = reason
+
+            val isTamper = reason == REASON_TAMPER
+            val badgeText = if (isTamper) "SETTINGS GUARDED" else "FOCUS LOCK ACTIVE"
+            val titleText = if (isTamper) "Lock rules are protected" else "Paused $appLabel"
+            val bodyText = if (isTamper) {
+                "App Info, Uninstall, and Accessibility Settings are guarded during $windowName (active until $endText). Start the cooldown timer inside Focus Companion if you genuinely need to change rules."
+            } else {
+                "$windowName is active until $endText.\nTake one slow breath — no shame, just a gentle redirect back to your current step."
+            }
+
+            if (overlayView != null) {
+                overlayBadgeView?.text = badgeText
+                overlayTitleView?.text = titleText
+                overlayBodyView?.text = bodyText
+                return@post
+            }
+
+            val wm = windowManager ?: (getSystemService(Context.WINDOW_SERVICE) as? WindowManager)?.also {
+                windowManager = it
+            } ?: return@post
+
+            val overlay = buildShieldView(badgeText, titleText, bodyText)
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.CENTER
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+
+            runCatching {
+                wm.addView(overlay, params)
+                overlayView = overlay
+                mainHandler.removeCallbacks(watchdogRunnable)
+                mainHandler.postDelayed(watchdogRunnable, 1000L)
+            }
+        }
+    }
+
+    private fun buildShieldView(badgeText: String, titleText: String, bodyText: String): View {
+        val density = resources.displayMetrics.density
+        fun dp(value: Int): Int = (value * density).toInt()
+
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(Color.parseColor("#F0101614"))
+            isClickable = true
+            isFocusable = true
+            setPadding(dp(24), dp(48), dp(24), dp(48))
         }
 
+        val cardBackground = GradientDrawable().apply {
+            setColor(Color.parseColor("#1D2622"))
+            cornerRadius = dp(28).toFloat()
+            setStroke(dp(1), Color.parseColor("#385447"))
+        }
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = cardBackground
+            setPadding(dp(24), dp(28), dp(24), dp(24))
+        }
+
+        val badgeBg = GradientDrawable().apply {
+            setColor(Color.parseColor("#2A4236"))
+            cornerRadius = dp(20).toFloat()
+        }
+        val badge = TextView(this).apply {
+            text = badgeText
+            setTextColor(Color.parseColor("#8ED8B0"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTypeface(null, Typeface.BOLD)
+            letterSpacing = 0.08f
+            background = badgeBg
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+        }
+        overlayBadgeView = badge
+
+        val title = TextView(this).apply {
+            text = titleText
+            setTextColor(Color.parseColor("#F4F7F5"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(16), 0, dp(10))
+        }
+        overlayTitleView = title
+
+        val body = TextView(this).apply {
+            text = bodyText
+            setTextColor(Color.parseColor("#C2CEC8"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            gravity = Gravity.CENTER
+            setLineSpacing(dp(4).toFloat(), 1.0f)
+            setPadding(0, 0, 0, dp(24))
+        }
+        overlayBodyView = body
+
+        val primaryBg = GradientDrawable().apply {
+            setColor(Color.parseColor("#8ED8B0"))
+            cornerRadius = dp(26).toFloat()
+        }
+        val returnButton = Button(this).apply {
+            text = "Return to Focus Companion"
+            isAllCaps = false
+            setTextColor(Color.parseColor("#0D261A"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setTypeface(null, Typeface.BOLD)
+            background = primaryBg
+            minHeight = dp(52)
+            setOnClickListener {
+                val pkg = activeShieldPackage ?: packageName
+                val label = activeShieldLabel ?: "Blocked App"
+                val reason = activeShieldReason
+                removeOverlay()
+                openMainAppShield(pkg, label, reason)
+            }
+        }
+
+        val secondaryBg = GradientDrawable().apply {
+            setColor(Color.TRANSPARENT)
+            cornerRadius = dp(26).toFloat()
+            setStroke(dp(1), Color.parseColor("#546B60"))
+        }
+        val homeButton = Button(this).apply {
+            text = "Go to Home Screen"
+            isAllCaps = false
+            setTextColor(Color.parseColor("#E3ECE7"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            background = secondaryBg
+            minHeight = dp(48)
+            setOnClickListener {
+                homeGracePackage = activeShieldPackage
+                homeGraceUntilMs = SystemClock.elapsedRealtime() + 850L
+                removeOverlay()
+                performGlobalAction(GLOBAL_ACTION_HOME)
+            }
+        }
+
+        card.addView(
+            badge,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        card.addView(
+            title,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        card.addView(
+            body,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        card.addView(
+            returnButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        card.addView(
+            homeButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(10)
+            }
+        )
+
+        root.addView(
+            card,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        )
+        return root
+    }
+
+    private fun openMainAppShield(blockedPackage: String, appLabel: String, reason: String) {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -119,7 +442,21 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             putExtra(MainActivity.EXTRA_BLOCKED_APP_NAME, appLabel)
             putExtra(MainActivity.EXTRA_LOCK_BLOCKED_REASON, reason)
         }
-        startActivity(intent)
+        runCatching { startActivity(intent) }
+    }
+
+    private fun removeOverlay() {
+        mainHandler.post {
+            mainHandler.removeCallbacks(watchdogRunnable)
+            val view = overlayView ?: return@post
+            overlayView = null
+            overlayTitleView = null
+            overlayBodyView = null
+            overlayBadgeView = null
+            runCatching {
+                windowManager?.removeViewImmediate(view)
+            }
+        }
     }
 
     private fun buildEssentialPackages(): Set<String> {
