@@ -258,6 +258,40 @@ fun FocusLockScreen(
                             Text("App Info")
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { FocusBlockerAccessibilityService.openOverlayPermissionSettings(context) },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = if (state.isAccessibilityEnabled)
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                else
+                                    MaterialTheme.colorScheme.onErrorContainer
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("open_overlay_permission_button")
+                        ) {
+                            Text(if (state.hasOverlayPermission) "Overlay: On" else "Allow Pop-up / Overlay")
+                        }
+                        OutlinedButton(
+                            onClick = { FocusBlockerAccessibilityService.openUsageStatsSettings(context) },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = if (state.isAccessibilityEnabled)
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                else
+                                    MaterialTheme.colorScheme.onErrorContainer
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("open_usage_access_button")
+                        ) {
+                            Text(if (state.hasUsageStatsPermission) "Usage Access: On" else "Usage Fallback")
+                        }
+                    }
                     if (state.isAccessibilityEnabled) {
                         Spacer(Modifier.height(8.dp))
                         OutlinedButton(

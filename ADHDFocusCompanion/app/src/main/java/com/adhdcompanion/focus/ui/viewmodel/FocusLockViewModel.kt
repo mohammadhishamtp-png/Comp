@@ -27,6 +27,8 @@ data class FocusLockUiState(
     val isAccessibilityEnabled: Boolean = false,
     val isAccessibilitySettingOn: Boolean = false,
     val isBatteryUnrestricted: Boolean = true,
+    val hasOverlayPermission: Boolean = false,
+    val hasUsageStatsPermission: Boolean = false,
     val eventsReceivedCount: Long = 0L,
     val lastForegroundPackage: String? = null,
     val serviceError: String? = null,
@@ -73,6 +75,8 @@ class FocusLockViewModel(
                     evaluation = eval,
                     isAccessibilityEnabled = FocusBlockerAccessibilityService.isServiceEnabled(appContext),
                     isAccessibilitySettingOn = FocusBlockerAccessibilityService.isAccessibilitySettingOn(appContext),
+                    hasOverlayPermission = FocusBlockerAccessibilityService.hasOverlayPermission(appContext),
+                    hasUsageStatsPermission = FocusBlockerAccessibilityService.hasUsageStatsPermission(appContext),
                     eventsReceivedCount = FocusBlockerAccessibilityService.eventsReceivedCount,
                     lastForegroundPackage = FocusBlockerAccessibilityService.lastForegroundPackage,
                     serviceError = FocusBlockerAccessibilityService.lastServiceError,
@@ -86,10 +90,14 @@ class FocusLockViewModel(
         val liveEnabled = FocusBlockerAccessibilityService.isServiceEnabled(appContext)
         val settingOn = FocusBlockerAccessibilityService.isAccessibilitySettingOn(appContext)
         val batteryUnrestricted = FocusBlockerAccessibilityService.isIgnoringBatteryOptimizations(appContext)
+        val overlayGranted = FocusBlockerAccessibilityService.hasOverlayPermission(appContext)
+        val usageStatsGranted = FocusBlockerAccessibilityService.hasUsageStatsPermission(appContext)
         _uiState.value = _uiState.value.copy(
             isAccessibilityEnabled = liveEnabled,
             isAccessibilitySettingOn = settingOn,
             isBatteryUnrestricted = batteryUnrestricted,
+            hasOverlayPermission = overlayGranted,
+            hasUsageStatsPermission = usageStatsGranted,
             eventsReceivedCount = FocusBlockerAccessibilityService.eventsReceivedCount,
             lastForegroundPackage = FocusBlockerAccessibilityService.lastForegroundPackage,
             serviceError = FocusBlockerAccessibilityService.lastServiceError

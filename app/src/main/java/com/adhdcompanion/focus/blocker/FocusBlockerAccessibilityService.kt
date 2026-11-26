@@ -2,6 +2,9 @@ package com.adhdcompanion.focus.blocker
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.AppOpsManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -15,6 +18,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
@@ -27,6 +31,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -35,8 +40,8 @@ import com.adhdcompanion.focus.MainActivity
 
 /**
  * Detects foreground app switches during active scheduled focus lock windows
- * (and 1-tap Quick Locks) and immediately shields the screen with a
- * TYPE_ACCESSIBILITY_OVERLAY + Focus Companion redirect / Home fallback.
+ * (and 1-tap Quick Locks) and immediately kicks back to Home + launches Focus
+ * Companion's lock shield + renders a TYPE_ACCESSIBILITY_OVERLAY fallback.
  */
 class FocusBlockerAccessibilityService : AccessibilityService() {
 
@@ -51,8 +56,6 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
     private var activeShieldLabel: String? = null
     private var activeShieldReason: String = REASON_BLOCKED_APP
 
-    private var lastContentCheckMs = 0L
-    private var lastContentCheckPackage: String? = null
     private var lastLoggedMs = 0L
     private var lastLoggedPackage: String? = null
     private var lastHomeActionMs = 0L
@@ -76,7 +79,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                 }
                 val isInteractive = powerManager?.isInteractive ?: true
                 if (isInteractive) {
-                    inspectCurrentWindowsAndEnforce(event = null, allowHomeFallback = true)
+                    inspectCurrentWindowsAndEnforce(event = null)
                 }
                 if (isConnectedLive && eval.isBlockingActive) {
                     isActiveMonitorScheduled = true
@@ -90,7 +93,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         runCatching {
             val eval = FocusLockManager.getInstance(this).evaluateNow()
             if (eval.isBlockingActive) {
-                inspectCurrentWindowsAndEnforce(event = null, allowHomeFallback = true)
+                inspectCurrentWindowsAndEnforce(event = null)
             } else if (activeShieldReason != REASON_TEST_SHIELD) {
                 removeOverlay()
             }
@@ -103,10 +106,24 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             activeInstance = this
             isConnectedLive = true
             lastServiceError = null
+
+            // Programmatically reinforce AccessibilityServiceInfo so HyperOS/Android 14+
+            // never filters out external packages or window switch events.
+            val info = serviceInfo ?: AccessibilityServiceInfo()
+            info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED
+            info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+            info.flags = AccessibilityServiceInfo.DEFAULT or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            info.notificationTimeout = 50L
+            info.packageNames = null
+            serviceInfo = info
+
             windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
             powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
             cachedEssentialPackages = runCatching { buildEssentialPackages() }.getOrDefault(setOf(packageName))
-            Log.d(TAG, "FocusBlockerAccessibilityService connected")
+            Log.d(TAG, "FocusBlockerAccessibilityService connected (packageNames=null)")
             onRulesUpdated()
         }.onFailure { err ->
             lastServiceError = err.message ?: err.javaClass.simpleName
@@ -118,13 +135,24 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         runCatching {
             activeInstance = this
             isConnectedLive = true
-            eventsReceivedCount += 1L
 
             if (event == null) return
 
-            val eventPkg = runCatching { event.packageName?.toString() }.getOrNull()
-            if (!eventPkg.isNullOrBlank() && eventPkg != packageName) {
-                lastForegroundPackage = eventPkg
+            val eventType = event.eventType
+            val eventPkg = runCatching { event.packageName?.toString() }.getOrNull()?.takeIf { it.isNotBlank() }
+
+            // Increment "Events seen" on every valid window state / windows changed event
+            if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED
+            ) {
+                val effectivePkg = eventPkg
+                    ?: runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()?.takeIf { it.isNotBlank() }
+                if (effectivePkg != null) {
+                    eventsReceivedCount += 1L
+                    if (effectivePkg != packageName) {
+                        lastForegroundPackage = effectivePkg
+                    }
+                }
             }
 
             val lockManager = FocusLockManager.getInstance(this)
@@ -138,27 +166,14 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             }
 
             ensureActiveMonitorRunning()
-
-            val now = SystemClock.elapsedRealtime()
-            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-                // Only throttle repeated content changes from the SAME package so we never drop an app switch
-                if (eventPkg == lastContentCheckPackage && now - lastContentCheckMs < 120L) {
-                    return
-                }
-                lastContentCheckMs = now
-                lastContentCheckPackage = eventPkg
-            }
-
-            inspectCurrentWindowsAndEnforce(event = event, allowHomeFallback = false)
+            inspectCurrentWindowsAndEnforce(event = event)
         }.onFailure { err ->
             lastServiceError = err.message ?: err.javaClass.simpleName
+            Log.e(TAG, "onAccessibilityEvent error", err)
         }
     }
 
-    private fun inspectCurrentWindowsAndEnforce(
-        event: AccessibilityEvent?,
-        allowHomeFallback: Boolean
-    ) {
+    private fun inspectCurrentWindowsAndEnforce(event: AccessibilityEvent?) {
         val lockManager = FocusLockManager.getInstance(this)
         val eval = lockManager.evaluateNow()
         if (!eval.isBlockingActive) {
@@ -169,10 +184,9 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (cachedEssentialPackages.isEmpty()) {
-            cachedEssentialPackages = runCatching { buildEssentialPackages() }
-                .getOrDefault(setOf(packageName))
-        }
+        // Refresh essential packages dynamically so switching keyboards is always respected
+        cachedEssentialPackages = runCatching { buildEssentialPackages() }
+            .getOrDefault(cachedEssentialPackages.ifEmpty { setOf(packageName) })
 
         val now = SystemClock.elapsedRealtime()
         val rootNode = runCatching { rootInActiveWindow }.getOrNull()
@@ -207,14 +221,13 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                     windowName = eval.activeWindow?.name ?: "Focus",
                     endText = eval.activeWindow?.let { FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay) }
                         ?: "end of session",
-                    useHomeAction = false,
-                    allowHomeFallback = allowHomeFallback
+                    useHomeAction = false
                 )
                 return
             }
         }
 
-        // Check any visible distracting app (including split-screen or floating windows on tablets)
+        // Check any visible distracting app (including split-screen, floating windows, or UsageStats fallback)
         val blockedPkg = candidatePackages.firstOrNull { pkg ->
             if (pkg == homeGracePackage && now < homeGraceUntilMs) {
                 false
@@ -236,14 +249,12 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                 reason = REASON_BLOCKED_APP,
                 windowName = windowName,
                 endText = endText,
-                useHomeAction = true,
-                allowHomeFallback = allowHomeFallback
+                useHomeAction = true
             )
             return
         }
 
         // Only dismiss system overlay when our actual MainActivity is genuinely resumed in foreground
-        // (NEVER dismiss just because our own TYPE_ACCESSIBILITY_OVERLAY has rootPkg == packageName).
         if (isMainActivityResumed && overlayView != null && activeShieldReason != REASON_TEST_SHIELD) {
             removeOverlay()
         }
@@ -255,7 +266,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         if (eval.isBlockingActive) {
             ensureActiveMonitorRunning()
             mainHandler.post {
-                runCatching { inspectCurrentWindowsAndEnforce(event = null, allowHomeFallback = true) }
+                runCatching { inspectCurrentWindowsAndEnforce(event = null) }
             }
         } else {
             stopActiveMonitor()
@@ -304,11 +315,11 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
 
     private fun collectCandidatePackages(event: AccessibilityEvent?, rootPkg: String?): List<String> {
         val candidates = LinkedHashSet<String>()
-        rootPkg?.takeIf { it.isNotBlank() }?.let { candidates.add(it) }
         runCatching { event?.packageName?.toString() }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
             ?.let { candidates.add(it) }
+        rootPkg?.takeIf { it.isNotBlank() }?.let { candidates.add(it) }
 
         // Inspect all visible application windows (handles tablet split-screen & floating windows)
         runCatching { windows }.getOrNull()?.forEach { win ->
@@ -320,7 +331,37 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                 }
             }
         }
+
+        // Optional UsageStatsManager fallback when Usage Access permission is granted
+        if (candidates.isEmpty() || candidates.all { it in cachedEssentialPackages }) {
+            queryRecentUsageStatsPackage()?.let { candidates.add(it) }
+        }
+
         return candidates.toList()
+    }
+
+    private fun queryRecentUsageStatsPackage(): String? {
+        if (!hasUsageStatsPermission(this)) return null
+        return runCatching {
+            val usm = getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return null
+            val endTime = System.currentTimeMillis()
+            val beginTime = endTime - 3_000L
+            val usageEvents = usm.queryEvents(beginTime, endTime)
+            val event = UsageEvents.Event()
+            var latestForegroundPkg: String? = null
+            var latestTimestamp = 0L
+            while (usageEvents.hasNextEvent()) {
+                usageEvents.getNextEvent(event)
+                if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED &&
+                    event.timeStamp >= latestTimestamp &&
+                    !event.packageName.isNullOrBlank()
+                ) {
+                    latestTimestamp = event.timeStamp
+                    latestForegroundPkg = event.packageName
+                }
+            }
+            latestForegroundPkg
+        }.getOrNull()
     }
 
     private fun engageShield(
@@ -329,8 +370,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         reason: String,
         windowName: String,
         endText: String,
-        useHomeAction: Boolean,
-        allowHomeFallback: Boolean
+        useHomeAction: Boolean
     ) {
         val now = SystemClock.elapsedRealtime()
         if (blockedPackage != lastLoggedPackage || now - lastLoggedMs > 1200L) {
@@ -343,7 +383,17 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             )
         }
 
-        // 1. Immediately cover the screen with our Accessibility overlay
+        // 1. Immediately return to Home FIRST (works natively on HyperOS even without pop-up permission)
+        if (now - lastHomeActionMs > 220L) {
+            lastHomeActionMs = now
+            if (useHomeAction) {
+                performGlobalAction(GLOBAL_ACTION_HOME)
+            } else {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+            }
+        }
+
+        // 2. Render Accessibility overlay shield
         showOrUpdateOverlay(
             blockedPackage = blockedPackage,
             appLabel = appLabel,
@@ -352,22 +402,10 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             endText = endText
         )
 
-        // 2. Launch MainActivity BEFORE GLOBAL_ACTION_HOME so Android's Home stopAppSwitches()
-        //    5-second delay does not suppress our in-app Focus Lock Shield.
+        // 3. Launch MainActivity to show the in-app Focus Lock shield
         if (now - lastLaunchRedirectMs > 850L) {
             lastLaunchRedirectMs = now
             openMainAppShield(blockedPackage, appLabel, reason)
-        }
-
-        // 3. On follow-up/watchdog ticks (or tamper attempts), also fire HOME/BACK if the blocked
-        //    app is still behind the overlay so the task is pushed out of the foreground.
-        if ((allowHomeFallback || !useHomeAction) && now - lastHomeActionMs > 250L) {
-            lastHomeActionMs = now
-            if (useHomeAction) {
-                performGlobalAction(GLOBAL_ACTION_HOME)
-            } else {
-                performGlobalAction(GLOBAL_ACTION_BACK)
-            }
         }
 
         mainHandler.removeCallbacks(followUpEnforceRunnable)
@@ -631,9 +669,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
 
     private fun openMainAppShield(blockedPackage: String, appLabel: String, reason: String) {
         val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(MainActivity.EXTRA_BLOCKED_PACKAGE, blockedPackage)
             putExtra(MainActivity.EXTRA_BLOCKED_APP_NAME, appLabel)
             putExtra(MainActivity.EXTRA_LOCK_BLOCKED_REASON, reason)
@@ -670,7 +706,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             "com.miui.securitycenter" // Only specific tamper screens inside HyperOS Security are blocked
         )
 
-        // Default home launcher so user is never trapped on home screen
+        // Default & installed home launchers so user is never trapped on home screen
         runCatching {
             val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
             packageManager.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
@@ -681,7 +717,11 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                 .forEach { set.add(it) }
         }
 
-        // Default input method (keyboard)
+        // All enabled keyboards / input methods + current default IME
+        runCatching {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.enabledInputMethodList?.mapNotNull { it.packageName }?.forEach { set.add(it) }
+        }
         runCatching {
             val ime = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
             ime?.substringBefore('/')?.takeIf { it.isNotBlank() }?.let { set.add(it) }
@@ -810,6 +850,31 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             }.getOrDefault(true)
         }
 
+        fun hasOverlayPermission(context: Context): Boolean {
+            return runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false)
+        }
+
+        @Suppress("DEPRECATION")
+        fun hasUsageStatsPermission(context: Context): Boolean {
+            return runCatching {
+                val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    appOps.unsafeCheckOpNoThrow(
+                        AppOpsManager.OPSTR_GET_USAGE_STATS,
+                        Process.myUid(),
+                        context.packageName
+                    )
+                } else {
+                    appOps.checkOpNoThrow(
+                        AppOpsManager.OPSTR_GET_USAGE_STATS,
+                        Process.myUid(),
+                        context.packageName
+                    )
+                }
+                mode == AppOpsManager.MODE_ALLOWED
+            }.getOrDefault(false)
+        }
+
         fun openAccessibilitySettings(context: Context) {
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -823,6 +888,25 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
+        }
+
+        fun openOverlayPermissionSettings(context: Context) {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:${context.packageName}")
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { context.startActivity(intent) }
+                .onFailure { openAppInfoSettings(context) }
+        }
+
+        fun openUsageStatsSettings(context: Context) {
+            val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { context.startActivity(intent) }
+                .onFailure { openAppInfoSettings(context) }
         }
     }
 }
