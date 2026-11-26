@@ -22,6 +22,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 data class LocalModelInfo(
@@ -32,13 +35,16 @@ data class LocalModelInfo(
 )
 
 /**
- * Thread-safe LiteRT-LM manager that loads `.litertlm` models exclusively from
+ * Memory-safe LiteRT-LM manager that loads `.litertlm` models exclusively from
  * `context.filesDir/offline_model.litertlm` (never bundled in APK/assets).
  *
- * All native lifecycle calls (`initialize`, `sendMessageAsync`, `cancelProcess`,
- * and `close`) execute on a single dedicated single-thread dispatcher so native
- * state is never raced, GPU initialization falls back cleanly to CPU, and active
- * Conversations are always closed before their parent Engine.
+ * Configured for mid-range and low-RAM Android tablets:
+ * - Caps context KV-cache (`maxNumTokens = 1024`).
+ * - Defaults to `Backend.CPU(threadCount = 4)` instead of GPU/OpenCL to avoid
+ *   driver memory duplication spikes.
+ * - Catches `OutOfMemoryError` and native initialization failures gracefully.
+ * - Auto-closes the active `Conversation` and `Engine` after 60 seconds of idle
+ *   time (and supports immediate release when leaving Doubt Solver) to free RAM.
  */
 class LocalLiteRtEngine(private val appContext: Context) {
 
@@ -48,11 +54,16 @@ class LocalLiteRtEngine(private val appContext: Context) {
     }
     private val inferenceDispatcher: ExecutorCoroutineDispatcher = inferenceExecutor.asCoroutineDispatcher()
 
+    private val idleTimerExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "LiteRT-LM-IdleTimer").apply { isDaemon = true }
+    }
+    private val idleLock = Any()
+    private var pendingIdleClose: ScheduledFuture<*>? = null
+
     private var engine: Engine? = null
     private var engineInitialized = false
     private var activeConversation: Conversation? = null
     private var loadedModelLastModified = -1L
-    private var loadedBackendName: String? = null
     private val isReleased = AtomicBoolean(false)
 
     fun modelFile(): File = File(context.filesDir, MODEL_FILE_NAME)
@@ -76,6 +87,7 @@ class LocalLiteRtEngine(private val appContext: Context) {
 
     suspend fun importModelFromUri(uri: Uri): Result<LocalModelInfo> = withContext(Dispatchers.IO) {
         runCatching {
+            cancelIdleClose()
             // Ensure any loaded Engine/Conversation releases the file first
             closeEngineSafely()
 
@@ -122,6 +134,7 @@ class LocalLiteRtEngine(private val appContext: Context) {
         userPrompt: String
     ): Flow<String> = flow {
         check(!isReleased.get()) { "LocalLiteRtEngine has been released." }
+        cancelIdleClose()
 
         val file = modelFile()
         check(file.exists() && file.length() > 0L) {
@@ -131,13 +144,14 @@ class LocalLiteRtEngine(private val appContext: Context) {
         val readyEngine = ensureEngineInitialized(file)
         closeActiveConversationLocked()
 
-        val conversationConfig = ConversationConfig(
-            systemInstruction = Contents.of(systemPrompt)
-        )
-        val conversation = readyEngine.createConversation(conversationConfig)
-        activeConversation = conversation
-
+        var conversation: Conversation? = null
         try {
+            val conversationConfig = ConversationConfig(
+                systemInstruction = Contents.of(systemPrompt)
+            )
+            conversation = readyEngine.createConversation(conversationConfig)
+            activeConversation = conversation
+
             conversation.sendMessageAsync(userPrompt).collect { chunk ->
                 val token = chunk.toString()
                 if (token.isNotEmpty()) {
@@ -146,14 +160,36 @@ class LocalLiteRtEngine(private val appContext: Context) {
             }
         } catch (ce: CancellationException) {
             withContext(NonCancellable + inferenceDispatcher) {
-                runCatching { conversation.cancelProcess() }
+                conversation?.let { runCatching { it.cancelProcess() } }
             }
             throw ce
+        } catch (oom: OutOfMemoryError) {
+            Log.e(TAG, "OutOfMemoryError during offline LiteRT-LM inference", oom)
+            withContext(NonCancellable + inferenceDispatcher) {
+                closeEngineLocked()
+                System.gc()
+            }
+            throw IllegalStateException(
+                "Not enough free RAM on this device to finish the offline AI response. Close unused background apps or switch to online mode.",
+                oom
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "Offline LiteRT-LM generation failed", t)
+            withContext(NonCancellable + inferenceDispatcher) {
+                closeEngineLocked()
+            }
+            throw IllegalStateException(
+                "Offline AI couldn't generate a response (${t.message ?: t.javaClass.simpleName}).",
+                t
+            )
         } finally {
             withContext(NonCancellable + inferenceDispatcher) {
-                closeConversationSafely(conversation)
+                conversation?.let { closeConversationSafely(it) }
                 if (activeConversation === conversation) {
                     activeConversation = null
+                }
+                if (!isReleased.get() && engineInitialized) {
+                    scheduleIdleClose()
                 }
             }
         }
@@ -167,7 +203,22 @@ class LocalLiteRtEngine(private val appContext: Context) {
         }
     }
 
+    /**
+     * Non-blocking release trigger for UI lifecycle exit (e.g. leaving the Doubt Solver
+     * screen) so Conversation and Engine native RAM is reclaimed immediately.
+     */
+    fun releaseOnUiExit() {
+        cancelIdleClose()
+        if (isReleased.get()) return
+        runCatching {
+            inferenceExecutor.execute {
+                closeEngineLocked()
+            }
+        }
+    }
+
     suspend fun closeEngineSafely() {
+        cancelIdleClose()
         withContext(NonCancellable + inferenceDispatcher) {
             closeEngineLocked()
         }
@@ -175,9 +226,13 @@ class LocalLiteRtEngine(private val appContext: Context) {
 
     fun shutdown() {
         if (!isReleased.compareAndSet(false, true)) return
-        inferenceExecutor.execute {
-            closeEngineLocked()
-            inferenceExecutor.shutdown()
+        cancelIdleClose()
+        runCatching { idleTimerExecutor.shutdownNow() }
+        runCatching {
+            inferenceExecutor.execute {
+                closeEngineLocked()
+                inferenceExecutor.shutdown()
+            }
         }
     }
 
@@ -190,66 +245,68 @@ class LocalLiteRtEngine(private val appContext: Context) {
 
         closeEngineLocked()
 
-        // Try GPU backend first, then automatically fall back to CPU if GPU init fails
-        val gpuResult = tryInitializeBackend(file.absolutePath, Backend.GPU(), "GPU")
-        if (gpuResult != null) {
-            engine = gpuResult
-            engineInitialized = true
-            loadedModelLastModified = modified
-            loadedBackendName = "GPU"
-            return gpuResult
-        }
-
-        val cpuEngine = Engine(
-            EngineConfig(
+        var candidateEngine: Engine? = null
+        var initialized = false
+        return try {
+            val config = EngineConfig(
                 modelPath = file.absolutePath,
-                backend = Backend.CPU()
+                backend = Backend.CPU(threadCount = CPU_WORKER_THREADS),
+                maxNumTokens = MAX_CONTEXT_TOKENS
             )
-        )
-        try {
-            cpuEngine.initialize()
-            engine = cpuEngine
+            candidateEngine = Engine(config)
+            candidateEngine.initialize()
+            initialized = true
+            engine = candidateEngine
             engineInitialized = true
             loadedModelLastModified = modified
-            loadedBackendName = "CPU"
-            return cpuEngine
-        } catch (t: Throwable) {
-            // Do NOT leak a half-initialized Engine; never propagate secondary close failure
-            runCatching { cpuEngine.close() }
-            engine = null
-            engineInitialized = false
-            loadedModelLastModified = -1L
-            loadedBackendName = null
+            candidateEngine
+        } catch (oom: OutOfMemoryError) {
+            Log.e(TAG, "OutOfMemoryError initializing LiteRT-LM Engine", oom)
+            if (initialized && candidateEngine != null) {
+                runCatching { candidateEngine.close() }
+            }
+            closeEngineLocked()
+            System.gc()
             throw IllegalStateException(
-                "Offline LiteRT-LM failed to initialize (${t.message ?: t.javaClass.simpleName}).",
+                "Not enough free RAM to load the offline AI model on this tablet. Close heavy background apps or use online mode.",
+                oom
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "Native/runtime failure initializing LiteRT-LM Engine", t)
+            if (initialized && candidateEngine != null) {
+                runCatching { candidateEngine.close() }
+            }
+            closeEngineLocked()
+            throw IllegalStateException(
+                "Offline LiteRT-LM failed to initialize (${t.message ?: t.javaClass.simpleName}). Check that the .litertlm file is valid or use online mode.",
                 t
             )
         }
     }
 
-    private fun tryInitializeBackend(
-        modelPath: String,
-        backend: Backend,
-        label: String
-    ): Engine? {
-        var candidate: Engine? = null
-        var initialized = false
-        return try {
-            candidate = Engine(
-                EngineConfig(
-                    modelPath = modelPath,
-                    backend = backend
-                )
-            )
-            candidate.initialize()
-            initialized = true
-            candidate
-        } catch (t: Throwable) {
-            Log.w(TAG, "LiteRT-LM $label backend init failed; falling back to CPU", t)
-            if (initialized && candidate != null) {
-                runCatching { candidate.close() }
-            }
-            null
+    private fun scheduleIdleClose() {
+        synchronized(idleLock) {
+            pendingIdleClose?.cancel(false)
+            if (isReleased.get()) return
+            pendingIdleClose = idleTimerExecutor.schedule({
+                if (!isReleased.get()) {
+                    runCatching {
+                        inferenceExecutor.execute {
+                            if (activeConversation == null && engineInitialized) {
+                                Log.d(TAG, "Auto-closing idle LiteRT-LM Engine after ${IDLE_CLOSE_TIMEOUT_SECONDS}s to free RAM")
+                                closeEngineLocked()
+                            }
+                        }
+                    }
+                }
+            }, IDLE_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        }
+    }
+
+    private fun cancelIdleClose() {
+        synchronized(idleLock) {
+            pendingIdleClose?.cancel(false)
+            pendingIdleClose = null
         }
     }
 
@@ -260,7 +317,6 @@ class LocalLiteRtEngine(private val appContext: Context) {
         engine = null
         engineInitialized = false
         loadedModelLastModified = -1L
-        loadedBackendName = null
         if (eng != null && wasInitialized) {
             runCatching { eng.close() }
                 .onFailure { Log.w(TAG, "Ignored error while closing Engine", it) }
@@ -282,6 +338,9 @@ class LocalLiteRtEngine(private val appContext: Context) {
     companion object {
         private const val TAG = "LocalLiteRtEngine"
         const val MODEL_FILE_NAME = "offline_model.litertlm"
+        const val MAX_CONTEXT_TOKENS = 1024
+        const val CPU_WORKER_THREADS = 4
+        const val IDLE_CLOSE_TIMEOUT_SECONDS = 60L
 
         fun formatFileSize(bytes: Long): String {
             if (bytes <= 0L) return "0 B"
