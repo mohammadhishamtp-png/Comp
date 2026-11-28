@@ -1,12 +1,15 @@
 package com.adhdcompanion.focus.data.remote
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
 import com.adhdcompanion.focus.R
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
@@ -24,6 +27,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import java.security.MessageDigest
 
 class AuthManager(
     context: Context,
@@ -31,7 +35,6 @@ class AuthManager(
 ) {
     private val appContext = context.applicationContext
     private val auth: FirebaseAuth = FirebaseAuth.getInstance()
-    private val credentialManager: CredentialManager = CredentialManager.create(appContext)
 
     val currentUser: FirebaseUser?
         get() = auth.currentUser
@@ -53,7 +56,9 @@ class AuthManager(
                 .addCredentialOption(option)
                 .build()
 
-            val result = credentialManager.getCredential(activityContext, request)
+            // Always bind CredentialManager to Activity context (important on Xiaomi HyperOS / MIUI)
+            val cm = CredentialManager.create(activityContext)
+            val result = cm.getCredential(activityContext, request)
             val credential = result.credential
             if (credential is CustomCredential &&
                 credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
@@ -69,8 +74,11 @@ class AuthManager(
                 Result.failure(IllegalStateException("Unsupported credential type returned."))
             }
         } catch (cancelled: GetCredentialCancellationException) {
-            Log.w("Auth", "Google Sign-In cancelled or dismissed: ${cancelled.message}", cancelled)
+            Log.w("Auth", "Google Sign-In cancelled or dismissed: ${cancelled.errorMessage ?: cancelled.message}", cancelled)
             Result.failure(cancelled)
+        } catch (e: GetCredentialException) {
+            Log.e(TAG, "CredentialManager error (${e.type}): ${e.errorMessage ?: e.message}", e)
+            Result.failure(e)
         } catch (e: Exception) {
             Log.e(TAG, "Google sign-in failed", e)
             Result.failure(e)
@@ -89,7 +97,8 @@ class AuthManager(
             val request = GetCredentialRequest.Builder()
                 .addCredentialOption(option)
                 .build()
-            val result = credentialManager.getCredential(activityContext, request)
+            val cm = CredentialManager.create(activityContext)
+            val result = cm.getCredential(activityContext, request)
             val credential = result.credential
             if (credential is CustomCredential &&
                 credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
@@ -113,6 +122,33 @@ class AuthManager(
             Log.d(TAG, "Silent auto sign-in skipped: ${e.message}")
             null
         }
+    }
+
+    fun getAppSigningSha1(): String {
+        return runCatching {
+            val pm = appContext.packageManager
+            val pkg = appContext.packageName
+            val certBytes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val info = pm.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES)
+                val signingInfo = info.signingInfo
+                val sigs = if (signingInfo?.hasMultipleSigners() == true) {
+                    signingInfo.apkContentsSigners
+                } else {
+                    signingInfo?.signingCertificateHistory
+                }
+                sigs?.firstOrNull()?.toByteArray()
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(pkg, PackageManager.GET_SIGNATURES).signatures?.firstOrNull()?.toByteArray()
+            }
+            if (certBytes == null) {
+                "unknown"
+            } else {
+                MessageDigest.getInstance("SHA-1")
+                    .digest(certBytes)
+                    .joinToString(":") { "%02X".format(it) }
+            }
+        }.getOrElse { "unavailable" }
     }
 
     suspend fun ensureUserProfile(user: FirebaseUser) {
@@ -151,7 +187,7 @@ class AuthManager(
         withContext(NonCancellable) {
             auth.signOut()
             runCatching {
-                credentialManager.clearCredentialState(ClearCredentialStateRequest())
+                CredentialManager.create(appContext).clearCredentialState(ClearCredentialStateRequest())
             }
         }
     }

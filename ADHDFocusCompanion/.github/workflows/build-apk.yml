@@ -122,6 +122,18 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
+      - name: Verify APK signing SHA-1 matches google-services.json
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+          if [ -n "$APKSIGNER" ]; then
+            APK_SHA1=$("$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | awk -F': ' '/SHA-1 digest:/ {print tolower($2); exit}')
+            echo "Built APK SHA-1: ${APK_SHA1}"
+            if [ -n "${APK_SHA1}" ] && ! grep -qi "${APK_SHA1}" app/google-services.json; then
+              echo "::error::Built APK SHA-1 (${APK_SHA1}) does not match app/google-services.json!"
+              exit 1
+            fi
+          fi
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
