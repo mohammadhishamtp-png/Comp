@@ -219,8 +219,10 @@ fun AuthScreen(
                         val res = authManager.signInWithGoogle(host)
                         isLoading = false
                         res.onFailure { err ->
-                            if (err !is GetCredentialCancellationException) {
-                                errorMessage = err.message ?: "Google sign-in failed. Please try again."
+                            errorMessage = if (err is GetCredentialCancellationException) {
+                                "Sign-in was cancelled. If this happens right after choosing your account, reinstall an APK signed with the registered Firebase keystore."
+                            } else {
+                                err.message ?: "Google sign-in failed. Please try again."
                             }
                         }
                     }

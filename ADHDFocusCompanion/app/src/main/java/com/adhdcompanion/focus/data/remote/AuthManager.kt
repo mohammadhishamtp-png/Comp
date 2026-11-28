@@ -69,7 +69,7 @@ class AuthManager(
                 Result.failure(IllegalStateException("Unsupported credential type returned."))
             }
         } catch (cancelled: GetCredentialCancellationException) {
-            Log.d(TAG, "User cancelled Google sign-in", cancelled)
+            Log.w("Auth", "Google Sign-In cancelled or dismissed: ${cancelled.message}", cancelled)
             Result.failure(cancelled)
         } catch (e: Exception) {
             Log.e(TAG, "Google sign-in failed", e)
