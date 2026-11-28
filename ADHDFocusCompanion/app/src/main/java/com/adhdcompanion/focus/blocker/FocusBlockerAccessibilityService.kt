@@ -37,22 +37,29 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.adhdcompanion.focus.MainActivity
+import java.util.Locale
 
 /**
- * Detects foreground app switches during active scheduled focus lock windows
- * (and 1-tap Quick Locks) and immediately kicks back to Home + launches Focus
- * Companion's lock shield + renders a TYPE_ACCESSIBILITY_OVERLAY fallback.
+ * Intercepts distracting apps, short-form feeds (YouTube Shorts & Instagram Reels),
+ * and non-study YouTube videos (Regain-style Study Channels Only mode).
  */
 class FocusBlockerAccessibilityService : AccessibilityService() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var windowManager: WindowManager? = null
     private var powerManager: PowerManager? = null
+
     private var overlayView: View? = null
     private var overlayTitleView: TextView? = null
     private var overlayBodyView: TextView? = null
     private var overlayBadgeView: TextView? = null
+    private var overlayPrimaryButton: Button? = null
+    private var overlaySecondaryButton: Button? = null
     private var overlayPasswordButton: Button? = null
+
+    private var toastPillView: View? = null
+    private val dismissToastRunnable = Runnable { removeToastPill() }
+
     private var activeShieldPackage: String? = null
     private var activeShieldLabel: String? = null
     private var activeShieldReason: String = REASON_BLOCKED_APP
@@ -62,6 +69,11 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
     private var lastHomeActionMs = 0L
     private var lastLaunchRedirectMs = 0L
     private var lastShortsBackMs = 0L
+    private var lastShortsWindowStartMs = 0L
+    private var consecutiveShortsHits = 0
+    private var lastYtBackMs = 0L
+    private var lastApprovedYtAtMs = 0L
+    private var lastContentInspectMs = 0L
     private var homeGracePackage: String? = null
     private var homeGraceUntilMs = 0L
     private var cachedEssentialPackages: Set<String> = emptySet()
@@ -73,7 +85,12 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             runCatching {
                 val lockManager = FocusLockManager.getInstance(this@FocusBlockerAccessibilityService)
                 val eval = lockManager.evaluateNow()
-                if (!eval.isBlockingActive) {
+                val cfg = lockManager.config.value
+                val inWatchedVideoApp = lastForegroundPackage in WATCHED_VIDEO_PACKAGES
+                val shouldKeepWatching = eval.isBlockingActive ||
+                    ((cfg.blockShortsAndReels || cfg.youtubeStudyModeEnabled) && inWatchedVideoApp)
+
+                if (!shouldKeepWatching) {
                     if (activeShieldReason != REASON_TEST_SHIELD) {
                         removeOverlay()
                     }
@@ -83,7 +100,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                 if (isInteractive) {
                     inspectCurrentWindowsAndEnforce(event = null)
                 }
-                if (isConnectedLive && eval.isBlockingActive) {
+                if (isConnectedLive && shouldKeepWatching) {
                     isActiveMonitorScheduled = true
                     mainHandler.postDelayed(this, ACTIVE_MONITOR_INTERVAL_MS)
                 }
@@ -93,8 +110,11 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
 
     private val followUpEnforceRunnable = Runnable {
         runCatching {
-            val eval = FocusLockManager.getInstance(this).evaluateNow()
-            if (eval.isBlockingActive) {
+            val lockManager = FocusLockManager.getInstance(this)
+            val eval = lockManager.evaluateNow()
+            val cfg = lockManager.config.value
+            val inWatchedVideoApp = lastForegroundPackage in WATCHED_VIDEO_PACKAGES
+            if (eval.isBlockingActive || ((cfg.blockShortsAndReels || cfg.youtubeStudyModeEnabled) && inWatchedVideoApp)) {
                 inspectCurrentWindowsAndEnforce(event = null)
             } else if (activeShieldReason != REASON_TEST_SHIELD) {
                 removeOverlay()
@@ -109,23 +129,25 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             isConnectedLive = true
             lastServiceError = null
 
-            // Programmatically reinforce AccessibilityServiceInfo so HyperOS/Android 14+
-            // never filters out external packages or window switch events.
             val info = serviceInfo ?: AccessibilityServiceInfo()
             info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
-                AccessibilityEvent.TYPE_WINDOWS_CHANGED
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED or
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                AccessibilityEvent.TYPE_VIEW_CLICKED or
+                AccessibilityEvent.TYPE_VIEW_SELECTED or
+                AccessibilityEvent.TYPE_VIEW_SCROLLED
             info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             info.flags = AccessibilityServiceInfo.DEFAULT or
                 AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-            info.notificationTimeout = 50L
+            info.notificationTimeout = 80L
             info.packageNames = null
             serviceInfo = info
 
             windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
             powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
             cachedEssentialPackages = runCatching { buildEssentialPackages() }.getOrDefault(setOf(packageName))
-            Log.d(TAG, "FocusBlockerAccessibilityService connected (packageNames=null)")
+            Log.d(TAG, "FocusBlockerAccessibilityService connected (full event coverage)")
             onRulesUpdated()
         }.onFailure { err ->
             lastServiceError = err.message ?: err.javaClass.simpleName
@@ -137,21 +159,23 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         runCatching {
             activeInstance = this
             isConnectedLive = true
-
             if (event == null) return
 
             val eventType = event.eventType
             val eventPkg = runCatching { event.packageName?.toString() }.getOrNull()?.takeIf { it.isNotBlank() }
 
-            // Increment "Events seen" on every valid window state / windows changed event
-            if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            val isWindowSwitch = eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
                 eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED
-            ) {
+
+            if (isWindowSwitch) {
                 val effectivePkg = eventPkg
                     ?: runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()?.takeIf { it.isNotBlank() }
                 if (effectivePkg != null) {
                     eventsReceivedCount += 1L
                     if (effectivePkg != packageName) {
+                        if (lastForegroundPackage != effectivePkg && effectivePkg !in YOUTUBE_PACKAGES) {
+                            lastApprovedYtAtMs = 0L
+                        }
                         lastForegroundPackage = effectivePkg
                     }
                 }
@@ -160,15 +184,32 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             val lockManager = FocusLockManager.getInstance(this)
             val eval = lockManager.evaluateNow()
             val cfg = lockManager.config.value
+            val activePkg = eventPkg
+                ?: runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
+                ?: lastForegroundPackage
+
+            val hasContentGuard = cfg.blockShortsAndReels || cfg.youtubeStudyModeEnabled
+            val isInWatchedApp = activePkg in WATCHED_VIDEO_PACKAGES
+
             if (!eval.isBlockingActive) {
-                stopActiveMonitor()
-                if (activeShieldReason != REASON_TEST_SHIELD) {
-                    removeOverlay()
+                if (!hasContentGuard || !isInWatchedApp) {
+                    stopActiveMonitor()
+                    if (activeShieldReason != REASON_TEST_SHIELD) {
+                        removeOverlay()
+                    }
+                    return
                 }
-                if (cfg.blockShortsAndReels) {
-                    checkAndExitShortsOrReels(eventPkg)
+            }
+
+            // Throttle high-frequency content/scroll events to keep battery & CPU tiny
+            if (!isWindowSwitch && eventType != AccessibilityEvent.TYPE_VIEW_CLICKED) {
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastContentInspectMs < CONTENT_INSPECT_THROTTLE_MS) {
+                    return
                 }
-                return
+                lastContentInspectMs = now
+            } else {
+                lastContentInspectMs = SystemClock.elapsedRealtime()
             }
 
             ensureActiveMonitorRunning()
@@ -182,15 +223,8 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
     private fun inspectCurrentWindowsAndEnforce(event: AccessibilityEvent?) {
         val lockManager = FocusLockManager.getInstance(this)
         val eval = lockManager.evaluateNow()
-        if (!eval.isBlockingActive) {
-            stopActiveMonitor()
-            if (activeShieldReason != REASON_TEST_SHIELD) {
-                removeOverlay()
-            }
-            return
-        }
+        val cfg = lockManager.config.value
 
-        // Refresh essential packages dynamically so switching keyboards is always respected
         cachedEssentialPackages = runCatching { buildEssentialPackages() }
             .getOrDefault(cachedEssentialPackages.ifEmpty { setOf(packageName) })
 
@@ -203,128 +237,394 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
 
         val candidatePackages = collectCandidatePackages(event, rootPkg)
 
-        // Check tamper attempts inside Settings / HyperOS Security / Package Installer
-        val settingsOrInstallerPkg = candidatePackages.firstOrNull {
-            it == "com.android.settings" ||
-                it == "com.miui.securitycenter" ||
-                it.contains("packageinstaller")
-        }
-        if (settingsOrInstallerPkg != null) {
-            val screenTokens = mutableListOf<String>()
-            runCatching {
-                event?.text?.forEach { cs ->
-                    val str = cs?.toString()?.trim()
-                    if (!str.isNullOrEmpty()) screenTokens.add(str)
+        if (eval.isBlockingActive) {
+            // 1. Check tamper attempts inside Settings / HyperOS Security / Package Installer
+            val settingsOrInstallerPkg = candidatePackages.firstOrNull {
+                it == "com.android.settings" ||
+                    it == "com.miui.securitycenter" ||
+                    it.contains("packageinstaller")
+            }
+            if (settingsOrInstallerPkg != null) {
+                val screenTokens = mutableListOf<String>()
+                runCatching {
+                    event?.text?.forEach { cs ->
+                        val str = cs?.toString()?.trim()
+                        if (!str.isNullOrEmpty()) screenTokens.add(str)
+                    }
+                }
+                collectNodeTexts(rootNode, screenTokens, maxTokens = 50, depth = 0)
+                val clsName = runCatching { event?.className?.toString() }.getOrNull()
+                if (lockManager.isTamperAttempt(settingsOrInstallerPkg, clsName, screenTokens)) {
+                    engageShield(
+                        blockedPackage = settingsOrInstallerPkg,
+                        appLabel = "Device Settings / App Info",
+                        reason = REASON_TAMPER,
+                        windowName = eval.activeWindow?.name ?: "Focus",
+                        endText = eval.activeWindow?.let { FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay) }
+                            ?: "end of session",
+                        useHomeAction = false
+                    )
+                    return
                 }
             }
-            collectNodeTexts(rootNode, screenTokens, maxTokens = 50, depth = 0)
-            val clsName = runCatching { event?.className?.toString() }.getOrNull()
-            if (lockManager.isTamperAttempt(settingsOrInstallerPkg, clsName, screenTokens)) {
+
+            // 2. Check any visible distracting app (including split-screen, floating windows, or UsageStats)
+            val blockedPkg = candidatePackages.firstOrNull { pkg ->
+                if (pkg == homeGracePackage && now < homeGraceUntilMs) {
+                    false
+                } else {
+                    lockManager.isPackageBlockedNow(pkg, cachedEssentialPackages)
+                }
+            }
+
+            if (blockedPkg != null) {
+                val label = lockManager.getAppLabel(blockedPkg)
+                val windowName = eval.activeWindow?.name?.ifBlank { "Focus Window" } ?: "Focus Window"
+                val endText = eval.activeWindow?.let {
+                    FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay)
+                } ?: "your scheduled end time"
+
                 engageShield(
-                    blockedPackage = settingsOrInstallerPkg,
-                    appLabel = "Device Settings / App Info",
-                    reason = REASON_TAMPER,
-                    windowName = eval.activeWindow?.name ?: "Focus",
-                    endText = eval.activeWindow?.let { FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay) }
-                        ?: "end of session",
-                    useHomeAction = false
+                    blockedPackage = blockedPkg,
+                    appLabel = label,
+                    reason = REASON_BLOCKED_APP,
+                    windowName = windowName,
+                    endText = endText,
+                    useHomeAction = true
                 )
                 return
             }
         }
 
-        // Check any visible distracting app (including split-screen, floating windows, or UsageStats fallback)
-        val blockedPkg = candidatePackages.firstOrNull { pkg ->
-            if (pkg == homeGracePackage && now < homeGraceUntilMs) {
-                false
-            } else {
-                lockManager.isPackageBlockedNow(pkg, cachedEssentialPackages)
-            }
-        }
+        val activeVideoPkg = candidatePackages.firstOrNull { it in WATCHED_VIDEO_PACKAGES }
+            ?: rootPkg?.takeIf { it in WATCHED_VIDEO_PACKAGES }
 
-        if (blockedPkg != null) {
-            val label = lockManager.getAppLabel(blockedPkg)
-            val windowName = eval.activeWindow?.name?.ifBlank { "Focus Window" } ?: "Focus Window"
-            val endText = eval.activeWindow?.let {
-                FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay)
-            } ?: "your scheduled end time"
-
-            engageShield(
-                blockedPackage = blockedPkg,
-                appLabel = label,
-                reason = REASON_BLOCKED_APP,
-                windowName = windowName,
-                endText = endText,
-                useHomeAction = true
-            )
-            return
-        }
-
-        if (lockManager.config.value.blockShortsAndReels) {
-            val activePkg = rootPkg ?: candidatePackages.firstOrNull()
-            if (checkAndExitShortsOrReels(activePkg)) {
+        // 3. Shorts & Reels blocker (also enforced automatically if YouTube Study Mode is ON)
+        if ((cfg.blockShortsAndReels || (cfg.youtubeStudyModeEnabled && activeVideoPkg in YOUTUBE_PACKAGES)) &&
+            activeVideoPkg != null &&
+            !(activeVideoPkg == homeGracePackage && now < homeGraceUntilMs)
+        ) {
+            if (checkAndExitShortsOrReels(activeVideoPkg, rootNode)) {
                 return
             }
         }
 
-        // Only dismiss system overlay when our actual MainActivity is genuinely resumed in foreground
-        if (isMainActivityResumed && overlayView != null && activeShieldReason != REASON_TEST_SHIELD) {
-            removeOverlay()
+        // 4. Regain-style YouTube Study Channels Only guard
+        if (cfg.youtubeStudyModeEnabled &&
+            activeVideoPkg != null &&
+            activeVideoPkg in YOUTUBE_PACKAGES &&
+            !(activeVideoPkg == homeGracePackage && now < homeGraceUntilMs)
+        ) {
+            if (inspectAndEnforceYoutubeStudyMode(activeVideoPkg, rootNode, lockManager, eval)) {
+                return
+            }
+        }
+
+        // Only dismiss blocking shield when MainActivity is resumed or user navigated safely away
+        if (overlayView != null && activeShieldReason != REASON_TEST_SHIELD) {
+            if (isMainActivityResumed || (activeShieldReason == REASON_YT_NON_STUDY && activeVideoPkg == null)) {
+                removeOverlay()
+            }
         }
     }
 
     /**
-     * Gated user-opted Accessibility hook for short-form video feeds (YouTube Shorts & Instagram Reels).
-     * Exits only the Shorts/Reels feed via GLOBAL_ACTION_BACK so regular educational videos keep playing.
+     * Traverses visible accessibility nodes safely using a bounded BFS/DFS stack (max 18 depth, 220 nodes)
+     * to detect YouTube Shorts, Instagram Reels, and mobile browser /shorts or /reel URLs.
      */
-    private fun checkAndExitShortsOrReels(foregroundPkg: String?): Boolean {
-        val pkg = foregroundPkg ?: return false
-        if (pkg != "com.google.android.youtube" && pkg != "com.instagram.android") return false
-        val root = runCatching { rootInActiveWindow }.getOrNull() ?: return false
-        val isShortFeed = hasShortsOrReelsNode(root, pkg, depth = 0)
+    private fun checkAndExitShortsOrReels(foregroundPkg: String, providedRoot: AccessibilityNodeInfo?): Boolean {
+        val root = providedRoot ?: runCatching { rootInActiveWindow }.getOrNull() ?: return false
+        val isShortFeed = detectShortsOrReelsFeed(root, foregroundPkg)
         if (!isShortFeed) return false
 
         val now = SystemClock.elapsedRealtime()
-        if (now - lastShortsBackMs > 950L) {
+        if (now - lastShortsBackMs > 750L) {
             lastShortsBackMs = now
+            if (now - lastShortsWindowStartMs > 4000L) {
+                lastShortsWindowStartMs = now
+                consecutiveShortsHits = 1
+            } else {
+                consecutiveShortsHits += 1
+            }
+
+            val label = when (foregroundPkg) {
+                in YOUTUBE_PACKAGES -> "YouTube Shorts"
+                in INSTAGRAM_PACKAGES -> "Instagram Reels"
+                else -> "Shorts / Reels (Browser)"
+            }
             FocusLockManager.getInstance(this).recordBlockedAttempt(
-                packageName = "$pkg.shorts",
-                appLabel = if (pkg == "com.google.android.youtube") "YouTube Shorts" else "Instagram Reels"
+                packageName = "$foregroundPkg.shorts",
+                appLabel = label
             )
-            performGlobalAction(GLOBAL_ACTION_BACK)
+
+            // If opened via deep link where Back stayed inside Shorts 3x in a row, exit to Home cleanly
+            if (consecutiveShortsHits >= 3) {
+                consecutiveShortsHits = 0
+                homeGracePackage = foregroundPkg
+                homeGraceUntilMs = now + 900L
+                performGlobalAction(GLOBAL_ACTION_HOME)
+                showBriefToastPill("Exited $label · Protect your attention")
+            } else {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                showBriefToastPill("$label blocked · Stay on your plan")
+                mainHandler.removeCallbacks(followUpEnforceRunnable)
+                mainHandler.postDelayed(followUpEnforceRunnable, 420L)
+            }
         }
         return true
     }
 
-    private fun hasShortsOrReelsNode(node: AccessibilityNodeInfo?, pkg: String, depth: Int): Boolean {
-        if (node == null || depth > 7) return false
-        val viewId = runCatching { node.viewIdResourceName?.lowercase() }.getOrNull().orEmpty()
-        if (pkg == "com.google.android.youtube") {
-            if (viewId.contains("reel_recycler") ||
-                viewId.contains("reel_player_page_container") ||
-                viewId.contains("shorts_player")
-            ) {
-                return true
+    private fun detectShortsOrReelsFeed(root: AccessibilityNodeInfo, pkg: String): Boolean {
+        val isYoutube = pkg in YOUTUBE_PACKAGES
+        val isInstagram = pkg in INSTAGRAM_PACKAGES
+        val isBrowser = pkg in BROWSER_PACKAGES
+
+        var foundRemixLabel = false
+        var foundShortTabOrReelDyn = false
+
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+        queue.addLast(root to 0)
+        var visited = 0
+
+        while (queue.isNotEmpty() && visited < MAX_INSPECT_NODES) {
+            val (node, depth) = queue.removeFirst()
+            visited++
+
+            val viewId = runCatching { node.viewIdResourceName?.lowercase(Locale.US) }.getOrNull().orEmpty()
+            val text = runCatching { node.text?.toString()?.trim()?.lowercase(Locale.US) }.getOrNull().orEmpty()
+            val desc = runCatching { node.contentDescription?.toString()?.trim()?.lowercase(Locale.US) }.getOrNull().orEmpty()
+            val selected = runCatching { node.isSelected }.getOrDefault(false)
+
+            if (isYoutube) {
+                if (viewId.contains("reel_recycler") ||
+                    viewId.contains("reel_player_page_container") ||
+                    viewId.contains("reel_watch_fragment_root") ||
+                    viewId.contains("shorts_player") ||
+                    viewId.contains("reel_progress_bar") ||
+                    viewId.contains("reel_item_container") ||
+                    viewId.contains("reel_player_overlay") ||
+                    viewId.contains("reel_main_container")
+                ) {
+                    return true
+                }
+                if (selected && (text == "shorts" || desc == "shorts" || desc.startsWith("shorts,"))) {
+                    return true
+                }
+                if (viewId.contains("reel_dyn_") || desc.contains("shorts")) {
+                    foundShortTabOrReelDyn = true
+                }
+                if (text == "remix" || desc == "remix") {
+                    foundRemixLabel = true
+                }
+                if (foundRemixLabel && foundShortTabOrReelDyn) {
+                    return true
+                }
+            } else if (isInstagram) {
+                if (viewId.contains("clips_viewer") ||
+                    viewId.contains("clips_video_container") ||
+                    viewId.contains("reel_viewer") ||
+                    viewId.contains("clips_swipe_refresh") ||
+                    viewId.contains("clips_media_info") ||
+                    viewId.contains("clips_author_info") ||
+                    viewId.contains("clips_caption") ||
+                    viewId.contains("clips_ufi") ||
+                    viewId.contains("clips_progress")
+                ) {
+                    return true
+                }
+                if (selected && (text == "reels" || desc == "reels" || desc.startsWith("reels,"))) {
+                    return true
+                }
+            } else if (isBrowser) {
+                val combined = "$text $desc"
+                if (combined.contains("youtube.com/shorts") ||
+                    combined.contains("youtu.be/shorts") ||
+                    combined.contains("m.youtube.com/shorts") ||
+                    combined.contains("instagram.com/reel")
+                ) {
+                    return true
+                }
             }
-        } else if (pkg == "com.instagram.android") {
-            if (viewId.contains("clips_viewer") ||
-                viewId.contains("clips_video_container") ||
-                viewId.contains("reel_viewer")
-            ) {
-                return true
+
+            if (depth < MAX_INSPECT_DEPTH) {
+                val count = node.childCount.coerceAtMost(MAX_CHILDREN_PER_NODE)
+                for (i in 0 until count) {
+                    node.getChild(i)?.let { queue.addLast(it to (depth + 1)) }
+                }
             }
-        }
-        val count = node.childCount.coerceAtMost(14)
-        for (i in 0 until count) {
-            if (hasShortsOrReelsNode(node.getChild(i), pkg, depth + 1)) return true
         }
         return false
+    }
+
+    /**
+     * Regain-style YouTube Study Channels Only mode:
+     * - Allows Search so the user can look up their study channel.
+     * - Allows Home / Subscriptions browse screens.
+     * - Whenever a video watch page opens, checks channel name / title metadata against whitelisted channels.
+     * - Preserves fullscreen playback for an already-approved study lecture.
+     */
+    private fun inspectAndEnforceYoutubeStudyMode(
+        ytPkg: String,
+        providedRoot: AccessibilityNodeInfo?,
+        lockManager: FocusLockManager,
+        eval: com.adhdcompanion.focus.model.LockEvaluationState
+    ): Boolean {
+        val root = providedRoot ?: runCatching { rootInActiveWindow }.getOrNull() ?: return false
+        val snapshot = captureYoutubeScreenSnapshot(root)
+
+        if (snapshot.isSearchScreen) {
+            return false
+        }
+        if (!snapshot.hasVideoPlayer) {
+            return false
+        }
+
+        val now = SystemClock.elapsedRealtime()
+
+        // Allow fullscreen rotation if user was just watching an approved study lecture
+        if (snapshot.isFullscreen && (now - lastApprovedYtAtMs) < APPROVED_YT_FULLSCREEN_GRACE_MS) {
+            return false
+        }
+
+        // If player just opened and metadata is still populating, re-inspect shortly instead of misfiring
+        if (!snapshot.hasMetadataArea && snapshot.tokens.size < 3) {
+            mainHandler.removeCallbacks(followUpEnforceRunnable)
+            mainHandler.postDelayed(followUpEnforceRunnable, 350L)
+            return false
+        }
+
+        if (lockManager.isYouTubeContentAllowed(snapshot.tokens)) {
+            lastApprovedYtAtMs = now
+            if (activeShieldReason == REASON_YT_NON_STUDY && overlayView != null) {
+                removeOverlay()
+            }
+            return false
+        }
+
+        // Video is NOT from any whitelisted study channel
+        lastApprovedYtAtMs = 0L
+        if (now - lastYtBackMs > 1000L) {
+            lastYtBackMs = now
+            lockManager.recordBlockedAttempt(
+                packageName = "$ytPkg.nonstudy",
+                appLabel = "YouTube (Non-Study)"
+            )
+            performGlobalAction(GLOBAL_ACTION_BACK)
+
+            val cfg = lockManager.config.value
+            val allowedPreview = if (cfg.allowedYoutubeChannels.isEmpty()) {
+                "No study channels added yet — open Focus Shield -> Study Channels to add channels like Khan Academy or Physics Wallah."
+            } else {
+                val preview = cfg.allowedYoutubeChannels.take(4).joinToString(", ")
+                val extra = if (cfg.allowedYoutubeChannels.size > 4) " +${cfg.allowedYoutubeChannels.size - 4} more" else ""
+                "Only your whitelisted study channels play while YouTube Study Mode is on:\n$preview$extra"
+            }
+
+            showOrUpdateOverlay(
+                blockedPackage = ytPkg,
+                appLabel = "Non-Study YouTube Video",
+                reason = REASON_YT_NON_STUDY,
+                windowName = eval.activeWindow?.name ?: "YouTube Study Mode",
+                endText = allowedPreview
+            )
+        }
+        return true
+    }
+
+    private data class YoutubeScreenSnapshot(
+        val isSearchScreen: Boolean,
+        val hasVideoPlayer: Boolean,
+        val isFullscreen: Boolean,
+        val hasMetadataArea: Boolean,
+        val tokens: List<String>
+    )
+
+    private fun captureYoutubeScreenSnapshot(root: AccessibilityNodeInfo): YoutubeScreenSnapshot {
+        var isSearchScreen = false
+        var hasVideoPlayer = false
+        var hasExitFullscreen = false
+        var hasMetadataArea = false
+        val tokens = ArrayList<String>(40)
+
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+        queue.addLast(root to 0)
+        var visited = 0
+
+        while (queue.isNotEmpty() && visited < MAX_YT_INSPECT_NODES) {
+            val (node, depth) = queue.removeFirst()
+            visited++
+
+            val viewId = runCatching { node.viewIdResourceName?.lowercase(Locale.US) }.getOrNull().orEmpty()
+            val text = runCatching { node.text?.toString()?.trim() }.getOrNull().orEmpty()
+            val desc = runCatching { node.contentDescription?.toString()?.trim() }.getOrNull().orEmpty()
+            val textLow = text.lowercase(Locale.US)
+            val descLow = desc.lowercase(Locale.US)
+
+            if (viewId.contains("search_edit_text") ||
+                viewId.contains("search_query") ||
+                viewId.contains("search_typeahead") ||
+                (node.isEditable && viewId.contains("search"))
+            ) {
+                isSearchScreen = true
+            }
+
+            if (viewId.contains("player_view") ||
+                viewId.contains("watch_player") ||
+                viewId.contains("next_gen_watch") ||
+                viewId.contains("watch_while_time_bar") ||
+                viewId.contains("player_control")
+            ) {
+                hasVideoPlayer = true
+            }
+
+            if (viewId.contains("watch_metadata") ||
+                viewId.contains("slim_video_information") ||
+                viewId.contains("video_metadata") ||
+                viewId.contains("channel_name") ||
+                viewId.contains("owner_name") ||
+                textLow == "subscribe" ||
+                textLow == "subscribed" ||
+                descLow == "subscribe" ||
+                descLow.startsWith("subscribe to ")
+            ) {
+                hasMetadataArea = true
+            }
+
+            if (descLow.contains("exit fullscreen")) {
+                hasExitFullscreen = true
+            }
+
+            if (text.length in 2..140 && textLow !in IGNORED_YT_UI_LABELS) {
+                tokens.add(text)
+            }
+            if (desc.length in 2..140 && descLow !in IGNORED_YT_UI_LABELS) {
+                tokens.add(desc)
+            }
+
+            if (depth < MAX_INSPECT_DEPTH) {
+                val count = node.childCount.coerceAtMost(MAX_CHILDREN_PER_NODE)
+                for (i in 0 until count) {
+                    node.getChild(i)?.let { queue.addLast(it to (depth + 1)) }
+                }
+            }
+        }
+
+        val isFullscreen = hasVideoPlayer && hasExitFullscreen && !hasMetadataArea
+        return YoutubeScreenSnapshot(
+            isSearchScreen = isSearchScreen,
+            hasVideoPlayer = hasVideoPlayer,
+            isFullscreen = isFullscreen,
+            hasMetadataArea = hasMetadataArea,
+            tokens = tokens
+        )
     }
 
     private fun onRulesUpdated() {
         val lockManager = FocusLockManager.getInstance(this)
         val eval = lockManager.evaluateNow()
-        if (eval.isBlockingActive) {
+        val cfg = lockManager.config.value
+        val inWatchedVideoApp = lastForegroundPackage in WATCHED_VIDEO_PACKAGES
+        if (eval.isBlockingActive || ((cfg.blockShortsAndReels || cfg.youtubeStudyModeEnabled) && inWatchedVideoApp)) {
             ensureActiveMonitorRunning()
             mainHandler.post {
                 runCatching { inspectCurrentWindowsAndEnforce(event = null) }
@@ -354,6 +654,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         isConnectedLive = false
         stopActiveMonitor()
         removeOverlay()
+        removeToastPill()
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
@@ -361,6 +662,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         isConnectedLive = false
         stopActiveMonitor()
         removeOverlay()
+        removeToastPill()
         mainHandler.removeCallbacksAndMessages(null)
         return super.onUnbind(intent)
     }
@@ -370,6 +672,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         isConnectedLive = false
         stopActiveMonitor()
         removeOverlay()
+        removeToastPill()
         mainHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
@@ -382,7 +685,6 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             ?.let { candidates.add(it) }
         rootPkg?.takeIf { it.isNotBlank() }?.let { candidates.add(it) }
 
-        // Inspect all visible application windows (handles tablet split-screen & floating windows)
         runCatching { windows }.getOrNull()?.forEach { win ->
             runCatching {
                 if (win.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
@@ -393,7 +695,6 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Optional UsageStatsManager fallback when Usage Access permission is granted
         if (candidates.isEmpty() || candidates.all { it in cachedEssentialPackages }) {
             queryRecentUsageStatsPackage()?.let { candidates.add(it) }
         }
@@ -444,7 +745,6 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             )
         }
 
-        // 1. Immediately return to Home FIRST (works natively on HyperOS even without pop-up permission)
         if (now - lastHomeActionMs > 220L) {
             lastHomeActionMs = now
             if (useHomeAction) {
@@ -454,7 +754,6 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 2. Render Accessibility overlay shield
         showOrUpdateOverlay(
             blockedPackage = blockedPackage,
             appLabel = appLabel,
@@ -463,7 +762,6 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             endText = endText
         )
 
-        // 3. Launch MainActivity to show the in-app Focus Lock shield
         if (now - lastLaunchRedirectMs > 850L) {
             lastLaunchRedirectMs = now
             openMainAppShield(blockedPackage, appLabel, reason)
@@ -472,6 +770,61 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         mainHandler.removeCallbacks(followUpEnforceRunnable)
         mainHandler.postDelayed(followUpEnforceRunnable, 240L)
         mainHandler.postDelayed(followUpEnforceRunnable, 650L)
+    }
+
+    private fun showBriefToastPill(message: String) {
+        mainHandler.post {
+            runCatching {
+                removeToastPillImmediate()
+                val wm = windowManager ?: (getSystemService(Context.WINDOW_SERVICE) as? WindowManager)?.also {
+                    windowManager = it
+                } ?: return@runCatching
+
+                val density = resources.displayMetrics.density
+                fun dp(v: Int): Int = (v * density).toInt()
+
+                val pillBg = GradientDrawable().apply {
+                    setColor(Color.parseColor("#EE10161D"))
+                    cornerRadius = dp(999).toFloat()
+                    setStroke(dp(1), Color.parseColor("#2EE6A6"))
+                }
+                val pill = TextView(this).apply {
+                    text = message
+                    setTextColor(Color.parseColor("#F8FAFC"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    setTypeface(null, Typeface.BOLD)
+                    background = pillBg
+                    setPadding(dp(18), dp(10), dp(18), dp(10))
+                }
+                val params = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    y = dp(48)
+                }
+                wm.addView(pill, params)
+                toastPillView = pill
+                mainHandler.removeCallbacks(dismissToastRunnable)
+                mainHandler.postDelayed(dismissToastRunnable, 1800L)
+            }
+        }
+    }
+
+    private fun removeToastPill() {
+        mainHandler.post { removeToastPillImmediate() }
+    }
+
+    private fun removeToastPillImmediate() {
+        mainHandler.removeCallbacks(dismissToastRunnable)
+        val view = toastPillView ?: return
+        toastPillView = null
+        runCatching { windowManager?.removeViewImmediate(view) }
     }
 
     private fun showOrUpdateOverlay(
@@ -489,29 +842,46 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
 
                 val isTamper = reason == REASON_TAMPER
                 val isTest = reason == REASON_TEST_SHIELD
+                val isYtNonStudy = reason == REASON_YT_NON_STUDY
+
                 val badgeText = when {
-                    isTest -> "BLOCKER TEST OK"
+                    isTest -> "SHIELD TEST OK"
+                    isYtNonStudy -> "YOUTUBE STUDY MODE"
                     isTamper -> "SETTINGS GUARDED"
-                    else -> "FOCUS LOCK ACTIVE"
+                    else -> "FOCUS SHIELD ACTIVE"
                 }
                 val titleText = when {
                     isTest -> "Blocker overlay works!"
+                    isYtNonStudy -> "Study Channels Only"
                     isTamper -> "Lock rules are protected"
                     else -> "Paused $appLabel"
                 }
                 val bodyText = when {
                     isTest -> "Your accessibility shield overlay rendered properly on this device. Tap either button below to dismiss."
+                    isYtNonStudy -> endText
                     isTamper -> "App Info, Uninstall, and Accessibility Settings are guarded during $windowName (active until $endText). Start the cooldown timer inside Focus Companion if you genuinely need to change rules."
                     else -> "$windowName is active until $endText.\nTake one slow breath — no shame, just a gentle redirect back to your current step."
                 }
+                val primaryLabel = when {
+                    isTest -> "Close Test Shield"
+                    isYtNonStudy -> "Search Study Channels"
+                    else -> "Return to Focus Companion"
+                }
+                val secondaryLabel = when {
+                    isTest -> "Done"
+                    isYtNonStudy -> "Open Shield Rules"
+                    else -> "Go to Home Screen"
+                }
 
-                val hasExitPassword = !isTest && FocusLockManager.getInstance(this).hasExitPassword()
+                val hasExitPassword = !isTest && !isYtNonStudy && FocusLockManager.getInstance(this).hasExitPassword()
 
                 val existing = overlayView
                 if (existing != null && existing.isAttachedToWindow) {
                     overlayBadgeView?.text = badgeText
                     overlayTitleView?.text = titleText
                     overlayBodyView?.text = bodyText
+                    overlayPrimaryButton?.text = primaryLabel
+                    overlaySecondaryButton?.text = secondaryLabel
                     overlayPasswordButton?.visibility = if (hasExitPassword) View.VISIBLE else View.GONE
                     return@runCatching
                 } else if (existing != null) {
@@ -522,7 +892,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                     windowManager = it
                 }
                 if (wm == null) {
-                    if (!isTest) openMainAppShield(blockedPackage, appLabel, reason)
+                    if (!isTest && !isYtNonStudy) openMainAppShield(blockedPackage, appLabel, reason)
                     return@runCatching
                 }
 
@@ -530,6 +900,8 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                     badgeText = badgeText,
                     titleText = titleText,
                     bodyText = bodyText,
+                    primaryLabel = primaryLabel,
+                    secondaryLabel = secondaryLabel,
                     isTest = isTest,
                     showPasswordExit = hasExitPassword
                 )
@@ -557,7 +929,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             }.onFailure { err ->
                 lastServiceError = err.message ?: err.javaClass.simpleName
                 overlayView = null
-                if (reason != REASON_TEST_SHIELD) {
+                if (reason != REASON_TEST_SHIELD && reason != REASON_YT_NON_STUDY) {
                     openMainAppShield(blockedPackage, appLabel, reason)
                 }
             }
@@ -568,6 +940,8 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         badgeText: String,
         titleText: String,
         bodyText: String,
+        primaryLabel: String,
+        secondaryLabel: String,
         isTest: Boolean = false,
         showPasswordExit: Boolean = false
     ): View {
@@ -575,14 +949,14 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         fun dp(value: Int): Int = (value * density).toInt()
 
         val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.parseColor("#F2101614"))
+            setBackgroundColor(Color.parseColor("#F505070C"))
             isClickable = true
             isFocusable = true
             isFocusableInTouchMode = true
             setPadding(dp(24), dp(48), dp(24), dp(48))
             setOnKeyListener { _, keyCode, event ->
                 if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-                    if (isTest) {
+                    if (isTest || activeShieldReason == REASON_YT_NON_STUDY) {
                         removeOverlay()
                     } else {
                         performGlobalAction(GLOBAL_ACTION_HOME)
@@ -594,10 +968,12 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             }
         }
 
-        val cardBackground = GradientDrawable().apply {
-            setColor(Color.parseColor("#1D2622"))
+        val cardBackground = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.parseColor("#111923"), Color.parseColor("#0A0D14"))
+        ).apply {
             cornerRadius = dp(28).toFloat()
-            setStroke(dp(1), Color.parseColor("#385447"))
+            setStroke(dp(1), Color.parseColor("#2EE6A6"))
         }
 
         val card = LinearLayout(this).apply {
@@ -608,15 +984,16 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         }
 
         val badgeBg = GradientDrawable().apply {
-            setColor(Color.parseColor("#2A4236"))
-            cornerRadius = dp(20).toFloat()
+            setColor(Color.parseColor("#0D2E24"))
+            cornerRadius = dp(999).toFloat()
+            setStroke(dp(1), Color.parseColor("#2EE6A6"))
         }
         val badge = TextView(this).apply {
             text = badgeText
-            setTextColor(Color.parseColor("#8ED8B0"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(Color.parseColor("#2EE6A6"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
             setTypeface(null, Typeface.BOLD)
-            letterSpacing = 0.08f
+            letterSpacing = 0.1f
             background = badgeBg
             setPadding(dp(14), dp(6), dp(14), dp(6))
         }
@@ -624,18 +1001,18 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
 
         val title = TextView(this).apply {
             text = titleText
-            setTextColor(Color.parseColor("#F4F7F5"))
+            setTextColor(Color.parseColor("#F8FAFC"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
             setTypeface(null, Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding(0, dp(16), 0, dp(10))
+            setPadding(0, dp(18), 0, dp(10))
         }
         overlayTitleView = title
 
         val body = TextView(this).apply {
             text = bodyText
-            setTextColor(Color.parseColor("#C2CEC8"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setTextColor(Color.parseColor("#B6C2D2"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f)
             gravity = Gravity.CENTER
             setLineSpacing(dp(4).toFloat(), 1.0f)
             setPadding(0, 0, 0, dp(24))
@@ -643,13 +1020,13 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         overlayBodyView = body
 
         val primaryBg = GradientDrawable().apply {
-            setColor(Color.parseColor("#8ED8B0"))
-            cornerRadius = dp(26).toFloat()
+            setColor(Color.parseColor("#2EE6A6"))
+            cornerRadius = dp(16).toFloat()
         }
-        val returnButton = Button(this).apply {
-            text = if (isTest) "Close Test Shield" else "Return to Focus Companion"
+        val primaryButton = Button(this).apply {
+            text = primaryLabel
             isAllCaps = false
-            setTextColor(Color.parseColor("#0D261A"))
+            setTextColor(Color.parseColor("#04120C"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             setTypeface(null, Typeface.BOLD)
             background = primaryBg
@@ -659,40 +1036,53 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                 val label = activeShieldLabel ?: "Blocked App"
                 val reason = activeShieldReason
                 removeOverlay()
-                if (!isTest) {
-                    openMainAppShield(pkg, label, reason)
+                when {
+                    isTest -> Unit
+                    reason == REASON_YT_NON_STUDY -> {
+                        homeGracePackage = pkg
+                        homeGraceUntilMs = SystemClock.elapsedRealtime() + 850L
+                    }
+                    else -> openMainAppShield(pkg, label, reason)
                 }
             }
         }
+        overlayPrimaryButton = primaryButton
 
         val secondaryBg = GradientDrawable().apply {
-            setColor(Color.TRANSPARENT)
-            cornerRadius = dp(26).toFloat()
-            setStroke(dp(1), Color.parseColor("#546B60"))
+            setColor(Color.parseColor("#141923"))
+            cornerRadius = dp(16).toFloat()
+            setStroke(dp(1), Color.parseColor("#263143"))
         }
-        val homeButton = Button(this).apply {
-            text = if (isTest) "Done" else "Go to Home Screen"
+        val secondaryButton = Button(this).apply {
+            text = secondaryLabel
             isAllCaps = false
             setTextColor(Color.parseColor("#E3ECE7"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             background = secondaryBg
             minHeight = dp(48)
             setOnClickListener {
-                if (!isTest) {
-                    homeGracePackage = activeShieldPackage
-                    homeGraceUntilMs = SystemClock.elapsedRealtime() + 850L
-                    removeOverlay()
-                    performGlobalAction(GLOBAL_ACTION_HOME)
-                } else {
-                    removeOverlay()
+                val reason = activeShieldReason
+                when {
+                    isTest -> removeOverlay()
+                    reason == REASON_YT_NON_STUDY -> {
+                        removeOverlay()
+                        openFocusLockScreen()
+                    }
+                    else -> {
+                        homeGracePackage = activeShieldPackage
+                        homeGraceUntilMs = SystemClock.elapsedRealtime() + 850L
+                        removeOverlay()
+                        performGlobalAction(GLOBAL_ACTION_HOME)
+                    }
                 }
             }
         }
+        overlaySecondaryButton = secondaryButton
 
         val passwordButton = Button(this).apply {
             text = "Exit Lock with Password"
             isAllCaps = false
-            setTextColor(Color.parseColor("#8ED8B0"))
+            setTextColor(Color.parseColor("#2EE6A6"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             background = secondaryBg
             minHeight = dp(48)
@@ -729,14 +1119,14 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             )
         )
         card.addView(
-            returnButton,
+            primaryButton,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         )
         card.addView(
-            homeButton,
+            secondaryButton,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -765,6 +1155,14 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         return root
     }
 
+    private fun openFocusLockScreen() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(MainActivity.EXTRA_OPEN_FOCUS_LOCK, true)
+        }
+        runCatching { startActivity(intent) }
+    }
+
     private fun openMainAppShield(
         blockedPackage: String,
         appLabel: String,
@@ -790,6 +1188,8 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             overlayTitleView = null
             overlayBodyView = null
             overlayBadgeView = null
+            overlayPrimaryButton = null
+            overlaySecondaryButton = null
             overlayPasswordButton = null
             activeShieldReason = REASON_BLOCKED_APP
             runCatching {
@@ -809,11 +1209,10 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             "com.google.android.dialer",
             "com.android.dialer",
             "com.samsung.android.dialer",
-            "com.android.settings", // Only specific tamper screens inside Settings are blocked
-            "com.miui.securitycenter" // Only specific tamper screens inside HyperOS Security are blocked
+            "com.android.settings",
+            "com.miui.securitycenter"
         )
 
-        // Default & installed home launchers so user is never trapped on home screen
         runCatching {
             val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
             packageManager.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
@@ -824,7 +1223,6 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                 .forEach { set.add(it) }
         }
 
-        // All enabled keyboards / input methods + current default IME
         runCatching {
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
             imm?.enabledInputMethodList?.mapNotNull { it.packageName }?.forEach { set.add(it) }
@@ -859,8 +1257,46 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         private const val TAG = "FocusBlockerService"
         const val REASON_BLOCKED_APP = "blocked_app"
         const val REASON_TAMPER = "tamper_attempt"
+        const val REASON_YT_NON_STUDY = "youtube_non_study"
         private const val REASON_TEST_SHIELD = "test_shield"
-        private const val ACTIVE_MONITOR_INTERVAL_MS = 650L
+        private const val ACTIVE_MONITOR_INTERVAL_MS = 600L
+        private const val CONTENT_INSPECT_THROTTLE_MS = 180L
+        private const val MAX_INSPECT_DEPTH = 18
+        private const val MAX_INSPECT_NODES = 220
+        private const val MAX_YT_INSPECT_NODES = 240
+        private const val MAX_CHILDREN_PER_NODE = 20
+        private const val APPROVED_YT_FULLSCREEN_GRACE_MS = 3 * 60 * 60_000L
+
+        private val YOUTUBE_PACKAGES = setOf(
+            "com.google.android.youtube",
+            "app.revanced.android.youtube",
+            "app.rvx.android.youtube"
+        )
+
+        private val INSTAGRAM_PACKAGES = setOf(
+            "com.instagram.android",
+            "com.instagram.lite"
+        )
+
+        private val BROWSER_PACKAGES = setOf(
+            "com.android.chrome",
+            "com.brave.browser",
+            "org.mozilla.firefox",
+            "com.microsoft.emmx",
+            "com.sec.android.app.sbrowser",
+            "com.mi.globalbrowser"
+        )
+
+        private val WATCHED_VIDEO_PACKAGES = YOUTUBE_PACKAGES + INSTAGRAM_PACKAGES + BROWSER_PACKAGES
+
+        private val IGNORED_YT_UI_LABELS = setOf(
+            "home", "shorts", "subscriptions", "you", "library",
+            "like", "dislike", "share", "remix", "download", "save",
+            "clip", "thanks", "subscribe", "subscribed", "comments",
+            "play video", "pause video", "next video", "previous video",
+            "enter fullscreen", "exit fullscreen", "more options",
+            "search", "cast", "notifications"
+        )
 
         @Volatile
         private var activeInstance: FocusBlockerAccessibilityService? = null
@@ -911,10 +1347,6 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             return true
         }
 
-        /**
-         * Returns true ONLY when the AccessibilityService is genuinely bound and running
-         * (not marked as malfunctioning/crashed by Android).
-         */
         fun isServiceEnabled(context: Context): Boolean {
             if (isConnectedLive) return true
             val expectedComponent = ComponentName(context, FocusBlockerAccessibilityService::class.java)
@@ -929,10 +1361,6 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             }.getOrDefault(false)
         }
 
-        /**
-         * Returns true if the system Accessibility toggle is ON in Settings, even if
-         * Android currently considers the service disconnected or malfunctioning.
-         */
         fun isAccessibilitySettingOn(context: Context): Boolean {
             if (isServiceEnabled(context)) return true
             val expectedComponent = ComponentName(context, FocusBlockerAccessibilityService::class.java)

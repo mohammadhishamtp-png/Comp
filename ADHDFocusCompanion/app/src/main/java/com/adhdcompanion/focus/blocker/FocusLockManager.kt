@@ -70,6 +70,7 @@ class FocusLockManager private constructor(context: Context) {
             mode = parsed.mode ?: LockMode.BLOCK_LIST,
             selectedPackages = parsed.selectedPackages ?: emptySet(),
             allowedStudyTools = parsed.allowedStudyTools ?: emptySet(),
+            allowedYoutubeChannels = parsed.allowedYoutubeChannels ?: emptySet(),
             windows = parsed.windows ?: FocusLockConfig().windows,
             cooldownMinutes = normalizedWait,
             hasExitPassword = hasPwd,
@@ -358,6 +359,88 @@ class FocusLockManager private constructor(context: Context) {
         return updateConfigIfAllowed { cfg ->
             cfg.copy(blockShortsAndReels = enabled)
         }
+    }
+
+    @Synchronized
+    fun setYoutubeStudyModeEnabled(enabled: Boolean): Boolean {
+        return updateConfigIfAllowed { cfg ->
+            cfg.copy(youtubeStudyModeEnabled = enabled)
+        }
+    }
+
+    @Synchronized
+    fun setYoutubeStrictChannelsOnly(strict: Boolean): Boolean {
+        return updateConfigIfAllowed { cfg ->
+            cfg.copy(youtubeStrictChannelsOnly = strict)
+        }
+    }
+
+    @Synchronized
+    fun addAllowedYoutubeChannel(channelName: String): Boolean {
+        val cleaned = channelName.trim().removePrefix("@").trim()
+        if (cleaned.length < 2) return false
+        return updateConfigIfAllowed { cfg ->
+            val exists = cfg.allowedYoutubeChannels.any { it.equals(cleaned, ignoreCase = true) }
+            if (exists) cfg else cfg.copy(allowedYoutubeChannels = cfg.allowedYoutubeChannels + cleaned)
+        }
+    }
+
+    @Synchronized
+    fun removeAllowedYoutubeChannel(channelName: String): Boolean {
+        return updateConfigIfAllowed { cfg ->
+            val next = cfg.allowedYoutubeChannels.filterNot { it.equals(channelName, ignoreCase = true) }.toSet()
+            cfg.copy(allowedYoutubeChannels = next)
+        }
+    }
+
+    @Synchronized
+    fun toggleAllowedYoutubeChannel(channelName: String): Boolean {
+        val cleaned = channelName.trim().removePrefix("@").trim()
+        if (cleaned.length < 2) return false
+        return updateConfigIfAllowed { cfg ->
+            val exists = cfg.allowedYoutubeChannels.any { it.equals(cleaned, ignoreCase = true) }
+            val next = if (exists) {
+                cfg.allowedYoutubeChannels.filterNot { it.equals(cleaned, ignoreCase = true) }.toSet()
+            } else {
+                cfg.allowedYoutubeChannels + cleaned
+            }
+            cfg.copy(allowedYoutubeChannels = next)
+        }
+    }
+
+    fun isYouTubeContentAllowed(screenTokens: List<String>): Boolean {
+        val cfg = _config.value
+        if (!cfg.youtubeStudyModeEnabled) return true
+        val channels = cfg.allowedYoutubeChannels
+        if (channels.isEmpty()) return false
+
+        val normalizedTokens = screenTokens.map { normalizeMatchToken(it) }.filter { it.isNotEmpty() }
+        if (normalizedTokens.isEmpty()) return true // Still loading UI metadata
+
+        val matchesWhitelistedChannel = channels.any { ch ->
+            val normChannel = normalizeMatchToken(ch)
+            val compactChannel = normChannel.replace(" ", "")
+            normChannel.length >= 2 && normalizedTokens.any { token ->
+                token.contains(normChannel) ||
+                    (compactChannel.length >= 3 && token.replace(" ", "").contains(compactChannel))
+            }
+        }
+        if (matchesWhitelistedChannel) return true
+
+        if (!cfg.youtubeStrictChannelsOnly) {
+            val matchesKeyword = STUDY_KEYWORDS.any { kw ->
+                normalizedTokens.any { it.contains(kw) }
+            }
+            if (matchesKeyword) return true
+        }
+        return false
+    }
+
+    private fun normalizeMatchToken(raw: String): String {
+        return raw.lowercase(Locale.US)
+            .replace("@", "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     @Synchronized
@@ -673,6 +756,28 @@ class FocusLockManager private constructor(context: Context) {
         const val MIN_WAIT_MINUTES = 1
         const val MAX_WAIT_MINUTES = 240
         const val MIN_PASSWORD_LENGTH = 4
+
+        val PRESET_STUDY_CHANNELS = listOf(
+            "Physics Wallah",
+            "Khan Academy",
+            "3Blue1Brown",
+            "MIT OpenCourseWare",
+            "Organic Chemistry Tutor",
+            "CrashCourse",
+            "Neso Academy",
+            "Unacademy",
+            "Vedantu",
+            "freeCodeCamp",
+            "Gate Smashers",
+            "TED-Ed"
+        )
+
+        private val STUDY_KEYWORDS = listOf(
+            "lecture", "ncert", "jee", "neet", "upsc", "gate", "syllabus",
+            "tutorial", "course", "revision", "chapter", "derivation",
+            "physics", "chemistry", "mathematics", "calculus", "biology",
+            "programming", "algorithm", "exam", "pyq", "notes"
+        )
 
         @Volatile
         private var INSTANCE: FocusLockManager? = null

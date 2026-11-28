@@ -98,13 +98,13 @@ fun FocusBottomBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(62.dp)
-                .padding(horizontal = 6.dp),
+                .height(64.dp)
+                .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             PrimaryNavItems.forEach { item ->
                 val selected = current == item.destination
-                val tint = if (selected) OnAmoled else OnAmoledSubtle
+                val tint = if (selected) FocusEmerald else OnAmoledSubtle
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -118,12 +118,20 @@ fun FocusBottomBar(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Icon(
-                        imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
-                        contentDescription = item.label,
-                        tint = if (selected) FocusEmerald else tint,
-                        modifier = Modifier.size(21.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(if (selected) FocusEmerald.copy(alpha = 0.14f) else Color.Transparent)
+                            .padding(horizontal = 14.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
+                            contentDescription = item.label,
+                            tint = tint,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                     Spacer(Modifier.height(3.dp))
                     Text(
                         text = item.label,
@@ -132,13 +140,6 @@ fun FocusBottomBar(
                         color = if (selected) OnAmoled else OnAmoledSubtle,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(3.dp))
-                    Box(
-                        modifier = Modifier
-                            .size(width = if (selected) 14.dp else 0.dp, height = 2.dp)
-                            .clip(CircleShape)
-                            .background(if (selected) FocusEmerald else Color.Transparent)
                     )
                 }
             }
@@ -215,6 +216,37 @@ fun AmoledCard(
         modifier = modifier
     ) {
         Column(content = content)
+    }
+}
+
+@Composable
+fun PremiumGlowCard(
+    modifier: Modifier = Modifier,
+    accentColor: Color = FocusEmerald,
+    borderColor: Color = accentColor.copy(alpha = 0.35f),
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = AmoledSurface,
+        border = BorderStroke(1.dp, borderColor),
+        modifier = modifier
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        colors = listOf(
+                            accentColor.copy(alpha = 0.12f),
+                            AmoledSurface.copy(alpha = 0.96f),
+                            AmoledSurface
+                        )
+                    )
+                )
+        ) {
+            Column(content = content)
+        }
     }
 }
 

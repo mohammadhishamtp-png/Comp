@@ -99,6 +99,9 @@ data class FocusLockConfig(
     val selectedPackages: Set<String> = emptySet(),
     val allowedStudyTools: Set<String> = emptySet(),
     val blockShortsAndReels: Boolean = false,
+    val youtubeStudyModeEnabled: Boolean = false,
+    val allowedYoutubeChannels: Set<String> = emptySet(),
+    val youtubeStrictChannelsOnly: Boolean = true,
     val windows: List<FocusLockWindow> = listOf(
         FocusLockWindow(
             id = "default_study_window",

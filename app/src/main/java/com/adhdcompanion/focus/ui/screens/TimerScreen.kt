@@ -508,6 +508,11 @@ fun TimerScreen(
 
         Spacer(Modifier.height(14.dp))
 
+        val lockCfg by container.focusLockManager.config.collectAsState()
+        val activeGuardsCount = (if (state.isStrictLockEnabled) 1 else 0) +
+            (if (lockCfg.blockShortsAndReels) 1 else 0) +
+            (if (lockCfg.youtubeStudyModeEnabled) 1 else 0)
+
         // 5. Compact 2-Pill Strip: Strict Shield + Soundscape Drawer Trigger
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -515,10 +520,10 @@ fun TimerScreen(
         ) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = if (state.isStrictLockEnabled) FocusEmerald.copy(alpha = 0.1f) else AmoledSurface,
+                color = if (activeGuardsCount > 0) FocusEmerald.copy(alpha = 0.1f) else AmoledSurface,
                 border = BorderStroke(
                     0.75.dp,
-                    if (state.isStrictLockEnabled) FocusEmerald.copy(alpha = 0.45f) else AmoledOutlineSubtle
+                    if (activeGuardsCount > 0) FocusEmerald.copy(alpha = 0.45f) else AmoledOutlineSubtle
                 ),
                 modifier = Modifier
                     .weight(1f)
@@ -531,18 +536,25 @@ fun TimerScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                         Icon(
-                            if (state.isStrictLockEnabled) Icons.Filled.Shield else Icons.Outlined.Shield,
+                            if (activeGuardsCount > 0) Icons.Filled.Shield else Icons.Outlined.Shield,
                             contentDescription = null,
-                            tint = if (state.isStrictLockEnabled) FocusEmerald else OnAmoledMuted,
+                            tint = if (activeGuardsCount > 0) FocusEmerald else OnAmoledMuted,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(Modifier.width(7.dp))
                         Text(
-                            text = if (state.isStrictLockEnabled) "Shield On" else "Shield Off",
+                            text = when {
+                                state.isStrictLockEnabled -> "Shield On"
+                                lockCfg.youtubeStudyModeEnabled -> "YT Study On"
+                                lockCfg.blockShortsAndReels -> "Shorts Off"
+                                else -> "Shield Off"
+                            },
                             style = MaterialTheme.typography.labelLarge,
-                            color = if (state.isStrictLockEnabled) FocusEmerald else OnAmoledMuted
+                            color = if (activeGuardsCount > 0) FocusEmerald else OnAmoledMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                     Text(

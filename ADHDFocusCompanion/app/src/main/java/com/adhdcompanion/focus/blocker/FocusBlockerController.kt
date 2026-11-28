@@ -26,6 +26,8 @@ interface FocusBlockerController {
     fun recordInterruption(subjectName: String, reason: String)
     fun toggleAllowedStudyTool(packageName: String): Boolean
     fun setBlockShortsAndReels(enabled: Boolean): Boolean
+    fun setYoutubeStudyModeEnabled(enabled: Boolean): Boolean
+    fun toggleAllowedYoutubeChannel(channelName: String): Boolean
     fun recentInterruptions(): List<FocusInterruptionEvent>
 }
 
@@ -88,6 +90,12 @@ class AndroidFocusBlockerController(
 
     override fun setBlockShortsAndReels(enabled: Boolean): Boolean =
         lockManager.setBlockShortsAndReels(enabled)
+
+    override fun setYoutubeStudyModeEnabled(enabled: Boolean): Boolean =
+        lockManager.setYoutubeStudyModeEnabled(enabled)
+
+    override fun toggleAllowedYoutubeChannel(channelName: String): Boolean =
+        lockManager.toggleAllowedYoutubeChannel(channelName)
 
     override fun recentInterruptions(): List<FocusInterruptionEvent> =
         lockManager.config.value.interruptionEvents

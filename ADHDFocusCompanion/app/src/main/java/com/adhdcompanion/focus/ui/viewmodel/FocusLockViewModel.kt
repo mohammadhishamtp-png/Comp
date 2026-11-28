@@ -37,6 +37,7 @@ data class FocusLockUiState(
     val isLoadingApps: Boolean = true,
     val appSearchQuery: String = "",
     val nextScheduledWindowLabel: String? = null,
+    val blockedTodayCount: Int = 0,
     val feedbackMessage: String? = null
 )
 
@@ -62,15 +63,18 @@ class FocusLockViewModel(
         loadInstalledApps()
 
         viewModelScope.launch {
+            val todayEpoch = java.time.LocalDate.now(java.time.ZoneId.systemDefault()).toEpochDay()
             combine(
                 lockManager.config,
+                lockManager.blockedEvents,
                 secondTicker
-            ) { config, now ->
-                config to lockManager.evaluateNow(now)
-            }.collect { (config, eval) ->
+            ) { config, blockedEvents, now ->
+                Triple(config, blockedEvents, lockManager.evaluateNow(now))
+            }.collect { (config, blockedEvents, eval) ->
                 val nextLabel = if (!eval.isInScheduledWindow) {
                     lockManager.describeNextWindowStart()
                 } else null
+                val todayBlocked = blockedEvents.count { it.dayEpoch == todayEpoch }
                 _uiState.value = _uiState.value.copy(
                     config = config,
                     evaluation = eval,
@@ -81,7 +85,8 @@ class FocusLockViewModel(
                     eventsReceivedCount = FocusBlockerAccessibilityService.eventsReceivedCount,
                     lastForegroundPackage = FocusBlockerAccessibilityService.lastForegroundPackage,
                     serviceError = FocusBlockerAccessibilityService.lastServiceError,
-                    nextScheduledWindowLabel = nextLabel
+                    nextScheduledWindowLabel = nextLabel,
+                    blockedTodayCount = todayBlocked
                 )
             }
         }
@@ -160,6 +165,43 @@ class FocusLockViewModel(
 
     fun setBlockShortsAndReels(enabled: Boolean) {
         val updated = lockManager.setBlockShortsAndReels(enabled)
+        if (!updated) notifyLocked()
+    }
+
+    fun setYoutubeStudyModeEnabled(enabled: Boolean) {
+        val updated = lockManager.setYoutubeStudyModeEnabled(enabled)
+        if (!updated) {
+            notifyLocked()
+        } else if (enabled && _uiState.value.config.allowedYoutubeChannels.isEmpty()) {
+            _uiState.value = _uiState.value.copy(
+                feedbackMessage = "YouTube Study Mode ON — add your study channels below so they can play."
+            )
+        }
+    }
+
+    fun setYoutubeStrictChannelsOnly(strict: Boolean) {
+        val updated = lockManager.setYoutubeStrictChannelsOnly(strict)
+        if (!updated) notifyLocked()
+    }
+
+    fun addAllowedYoutubeChannel(channelName: String): Boolean {
+        val trimmed = channelName.trim().removePrefix("@").trim()
+        if (trimmed.length < 2) {
+            _uiState.value = _uiState.value.copy(feedbackMessage = "Enter at least 2 characters for a channel name.")
+            return false
+        }
+        val updated = lockManager.addAllowedYoutubeChannel(trimmed)
+        if (!updated) notifyLocked()
+        return updated
+    }
+
+    fun removeAllowedYoutubeChannel(channelName: String) {
+        val updated = lockManager.removeAllowedYoutubeChannel(channelName)
+        if (!updated) notifyLocked()
+    }
+
+    fun toggleAllowedYoutubeChannel(channelName: String) {
+        val updated = lockManager.toggleAllowedYoutubeChannel(channelName)
         if (!updated) notifyLocked()
     }
 

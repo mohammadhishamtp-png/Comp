@@ -22,12 +22,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -37,7 +38,10 @@ import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.filled.PlayDisabled
+import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Timer
@@ -77,12 +81,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -98,6 +105,7 @@ import com.adhdcompanion.focus.di.AppContainer
 import com.adhdcompanion.focus.model.FocusLockWindow
 import com.adhdcompanion.focus.model.LockMode
 import com.adhdcompanion.focus.ui.components.AmoledCard
+import com.adhdcompanion.focus.ui.components.PremiumGlowCard
 import com.adhdcompanion.focus.ui.components.SectionLabel
 import com.adhdcompanion.focus.ui.components.SegmentedModeBar
 import com.adhdcompanion.focus.ui.theme.AmoledBlack
@@ -108,9 +116,10 @@ import com.adhdcompanion.focus.ui.theme.AmoledSurfaceElevated
 import com.adhdcompanion.focus.ui.theme.AmoledSurfaceHigh
 import com.adhdcompanion.focus.ui.theme.FocusAmber
 import com.adhdcompanion.focus.ui.theme.FocusCoral
-import com.adhdcompanion.focus.ui.theme.FocusCoralContainer
+import com.adhdcompanion.focus.ui.theme.FocusCyan
 import com.adhdcompanion.focus.ui.theme.FocusEmerald
 import com.adhdcompanion.focus.ui.theme.FocusEmeraldDim
+import com.adhdcompanion.focus.ui.theme.FocusIndigo
 import com.adhdcompanion.focus.ui.theme.OnAmoled
 import com.adhdcompanion.focus.ui.theme.OnAmoledMuted
 import com.adhdcompanion.focus.ui.theme.OnAmoledSubtle
@@ -157,7 +166,7 @@ fun FocusLockScreen(
     val coroutineScope = rememberCoroutineScope()
     var appPickerOffsetY by remember { mutableIntStateOf(0) }
 
-    var activeSectionTab by remember { mutableIntStateOf(0) } // 0 = Apps, 1 = Schedule, 2 = Guardrails
+    var activeSectionTab by remember { mutableIntStateOf(0) } // 0 = Guards & Apps, 1 = Schedule, 2 = Guardrails
     var permissionsExpanded by remember(state.isAccessibilityEnabled) {
         mutableStateOf(!state.isAccessibilityEnabled)
     }
@@ -170,12 +179,18 @@ fun FocusLockScreen(
     }
     var customWaitError by remember { mutableStateOf<String?>(null) }
     var isEditingStudyToolsPicker by remember { mutableStateOf(false) }
+    var customYoutubeChannelInput by remember { mutableStateOf("") }
 
     val isMalfunctioning = state.isAccessibilitySettingOn && !state.isAccessibilityEnabled
     val appCount = state.config.selectedPackages.size
+    val anyGuardLive = state.isAccessibilityEnabled && (
+        (eval.isBlockingActive && !noBlockAppsYet) ||
+            state.config.blockShortsAndReels ||
+            state.config.youtubeStudyModeEnabled
+        )
     val shieldColor = when {
         !state.isAccessibilityEnabled || isMalfunctioning -> FocusCoral
-        eval.isBlockingActive && !noBlockAppsYet -> FocusEmerald
+        anyGuardLive -> FocusEmerald
         else -> FocusAmber
     }
 
@@ -206,9 +221,23 @@ fun FocusLockScreen(
                         color = OnAmoled
                     )
                     Text(
-                        text = "App blocker · Shorts & Reels guard · Cooldown lock",
+                        text = "App blocker · Shorts & Reels · YouTube Study Mode",
                         style = MaterialTheme.typography.bodySmall,
                         color = OnAmoledMuted
+                    )
+                }
+            }
+            if (state.blockedTodayCount > 0) {
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = FocusEmerald.copy(alpha = 0.14f),
+                    border = BorderStroke(0.75.dp, FocusEmerald.copy(alpha = 0.4f))
+                ) {
+                    Text(
+                        text = "${state.blockedTodayCount} blocked",
+                        style = TabularStatStyle.copy(fontSize = 11.5.sp),
+                        color = FocusEmerald,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                     )
                 }
             }
@@ -232,10 +261,9 @@ fun FocusLockScreen(
 
         Spacer(Modifier.height(14.dp))
 
-        // 1. Sleek Regain Shield Hero Card
-        AmoledCard(
-            containerColor = AmoledSurface,
-            borderColor = shieldColor.copy(alpha = 0.45f),
+        // 1. Premium Regain Shield Hero Card
+        PremiumGlowCard(
+            accentColor = shieldColor,
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("blocker_live_status_card")
@@ -249,16 +277,20 @@ fun FocusLockScreen(
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
+                                .size(48.dp)
                                 .clip(CircleShape)
-                                .background(shieldColor.copy(alpha = 0.14f)),
+                                .background(
+                                    Brush.radialGradient(
+                                        listOf(shieldColor.copy(alpha = 0.28f), shieldColor.copy(alpha = 0.08f))
+                                    )
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = if (state.isAccessibilityEnabled) Icons.Filled.Shield else Icons.Filled.Warning,
                                 contentDescription = null,
                                 tint = shieldColor,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(24.dp)
                             )
                         }
                         Spacer(Modifier.width(12.dp))
@@ -266,10 +298,11 @@ fun FocusLockScreen(
                             Text(
                                 text = when {
                                     isMalfunctioning -> "Restart Accessibility Service"
-                                    !state.isAccessibilityEnabled -> "Setup Accessibility Shield"
+                                    !state.isAccessibilityEnabled -> "Enable Accessibility Shield"
+                                    eval.isBlockingActive && !noBlockAppsYet -> "Focus Shield Active"
+                                    state.config.youtubeStudyModeEnabled || state.config.blockShortsAndReels -> "Content Guards Live"
                                     noBlockAppsYet -> "Pick Apps to Guard"
-                                    eval.isBlockingActive -> "Shield Active Now"
-                                    !state.config.isMasterEnabled -> "Shield Paused"
+                                    !state.config.isMasterEnabled -> "Shield Ready"
                                     else -> "Shield Armed"
                                 },
                                 style = MaterialTheme.typography.titleMedium,
@@ -279,14 +312,19 @@ fun FocusLockScreen(
                             Text(
                                 text = when {
                                     isMalfunctioning -> "Toggle Focus Companion OFF -> ON in Accessibility"
-                                    !state.isAccessibilityEnabled -> "Required to intercept distracting apps"
-                                    noBlockAppsYet -> "Select 1+ distracting apps in the Apps tab"
-                                    eval.isBlockingActive -> {
+                                    !state.isAccessibilityEnabled -> "Needed for App Lock, Shorts/Reels & YT Study Mode"
+                                    eval.isBlockingActive && !noBlockAppsYet -> {
                                         val endText = eval.activeWindow?.let {
                                             FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay)
                                         } ?: "session end"
                                         "$appCount apps guarded until $endText"
                                     }
+                                    state.config.youtubeStudyModeEnabled && state.config.blockShortsAndReels ->
+                                        "Blocking Shorts/Reels & non-study YouTube videos"
+                                    state.config.blockShortsAndReels ->
+                                        "Shorts & Reels blocker active across YT & IG"
+                                    state.config.youtubeStudyModeEnabled ->
+                                        "YouTube restricted to ${state.config.allowedYoutubeChannels.size} study channels"
                                     else -> state.nextScheduledWindowLabel?.let { "Next window: $it" }
                                         ?: "$appCount apps ready · Tap Quick Lock below"
                                 },
@@ -295,6 +333,36 @@ fun FocusLockScreen(
                             )
                         }
                     }
+                }
+
+                Spacer(Modifier.height(14.dp))
+
+                // 3-Pillar Telemetry Strip
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    GuardPillarStat(
+                        label = "APPS",
+                        value = if (eval.isBlockingActive && !noBlockAppsYet) "$appCount LIVE" else "$appCount SET",
+                        isActive = eval.isBlockingActive && !noBlockAppsYet,
+                        accent = FocusEmerald,
+                        modifier = Modifier.weight(1f)
+                    )
+                    GuardPillarStat(
+                        label = "SHORTS/REELS",
+                        value = if (state.config.blockShortsAndReels) "ON" else "OFF",
+                        isActive = state.config.blockShortsAndReels,
+                        accent = FocusCyan,
+                        modifier = Modifier.weight(1f)
+                    )
+                    GuardPillarStat(
+                        label = "YT STUDY",
+                        value = if (state.config.youtubeStudyModeEnabled) "${state.config.allowedYoutubeChannels.size} CH" else "OFF",
+                        isActive = state.config.youtubeStudyModeEnabled,
+                        accent = FocusIndigo,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
 
                 if (noBlockAppsYet) {
@@ -321,16 +389,17 @@ fun FocusLockScreen(
                     listOf(
                         30 to ("30m" to "quick_lock_30m_button"),
                         60 to ("1h" to "quick_lock_1h_button"),
-                        120 to ("2h" to "quick_lock_2h_button")
+                        120 to ("2h" to "quick_lock_2h_button"),
+                        240 to ("4h" to "quick_lock_4h_button")
                     ).forEach { (mins, meta) ->
                         val (label, tag) = meta
                         Surface(
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(12.dp),
                             color = AmoledSurfaceHigh,
                             border = BorderStroke(0.75.dp, AmoledOutline),
                             modifier = Modifier
                                 .weight(1f)
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(12.dp))
                                 .clickable { viewModel.startQuickLock(mins) }
                                 .testTag(tag)
                         ) {
@@ -350,30 +419,28 @@ fun FocusLockScreen(
 
                 Spacer(Modifier.height(12.dp))
                 HorizontalDivider(thickness = 0.75.dp, color = AmoledOutlineSubtle)
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
 
-                // Compact expandable System Permissions & Diagnostics drawer
+                // Compact Status Pills Row + Expandable Setup
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(10.dp))
                         .clickable { permissionsExpanded = !permissionsExpanded }
-                        .padding(vertical = 4.dp),
+                        .padding(vertical = 2.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (state.isAccessibilityEnabled) {
-                            "System Health · Events: ${state.eventsReceivedCount} · Overlay ${if (state.hasOverlayPermission) "On" else "Off"}"
-                        } else {
-                            "Required Permissions & HyperOS Setup"
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (state.isAccessibilityEnabled) FocusEmerald else FocusCoral,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.weight(1f)
-                    )
+                    ) {
+                        PermissionDotPill("Access", state.isAccessibilityEnabled)
+                        PermissionDotPill("Overlay", state.hasOverlayPermission)
+                        PermissionDotPill("Usage", state.hasUsageStatsPermission)
+                        PermissionDotPill("Battery", state.isBatteryUnrestricted)
+                    }
                     Icon(
                         imageVector = if (permissionsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
                         contentDescription = "Toggle permissions",
@@ -383,12 +450,12 @@ fun FocusLockScreen(
                 }
 
                 AnimatedVisibility(visible = permissionsExpanded) {
-                    Column(modifier = Modifier.padding(top = 8.dp)) {
+                    Column(modifier = Modifier.padding(top = 10.dp)) {
                         Text(
                             text = when {
                                 state.isAccessibilityEnabled ->
-                                    "Connected & watching foreground switches.${state.lastForegroundPackage?.let { " Last: $it" } ?: ""}" +
-                                        if (!state.isBatteryUnrestricted) " Battery optimization may sleep the service — set App Info -> Battery -> No restrictions." else ""
+                                    "Service live (${state.eventsReceivedCount} window switches seen).${state.lastForegroundPackage?.let { " Last: $it" } ?: ""}" +
+                                        if (!state.isBatteryUnrestricted) " Set App Info -> Battery -> No restrictions so HyperOS keeps the blocker awake." else ""
                                 isMalfunctioning ->
                                     "Accessibility toggle is ON, but Android unbound the service. Turn it OFF, wait 2s, then turn ON, and set Battery -> No restrictions."
                                 else ->
@@ -582,9 +649,9 @@ fun FocusLockScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // 3. Clean 3-Tab Switcher (Apps | Schedule | Guardrails)
+        // 3. Clean 3-Tab Switcher (Guards & Apps | Schedule | Guardrails)
         SegmentedModeBar(
-            options = listOf("Apps ($appCount)", "Schedule", "Guardrails"),
+            options = listOf("Guards ($appCount)", "Schedule", "Guardrails"),
             selectedIndex = activeSectionTab,
             onSelect = { activeSectionTab = it },
             testTagPrefix = "shield_tab"
@@ -593,50 +660,254 @@ fun FocusLockScreen(
         Spacer(Modifier.height(14.dp))
 
         when (activeSectionTab) {
-            // TAB 0: APPS & SHORTS/REELS
+            // TAB 0: REGAIN CONTENT GUARDS + APP PICKER
             0 -> {
-                // Shorts & Reels Guard
-                AmoledCard(
-                    containerColor = AmoledSurface,
-                    borderColor = if (state.config.blockShortsAndReels) FocusEmerald.copy(alpha = 0.45f) else AmoledOutlineSubtle,
-                    modifier = Modifier.fillMaxWidth().testTag("shorts_reels_hook_card")
+                // Card A: Shorts & Reels Blocker
+                PremiumGlowCard(
+                    accentColor = if (state.config.blockShortsAndReels) FocusCyan else OnAmoledSubtle,
+                    borderColor = if (state.config.blockShortsAndReels) FocusCyan.copy(alpha = 0.45f) else AmoledOutlineSubtle,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("shorts_reels_hook_card")
                 ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            Icon(
-                                Icons.Filled.PlayDisabled,
-                                contentDescription = null,
-                                tint = if (state.config.blockShortsAndReels) FocusEmerald else OnAmoledMuted
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            Column {
-                                Text(
-                                    "Block Shorts & Reels",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = OnAmoled
-                                )
-                                Text(
-                                    "Allows long study lectures while backing out of short-form feeds",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = OnAmoledMuted
-                                )
+                    Column(Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(RoundedCornerShape(11.dp))
+                                        .background(
+                                            if (state.config.blockShortsAndReels) FocusCyan.copy(alpha = 0.16f) else AmoledSurfaceHigh
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Filled.PlayDisabled,
+                                        contentDescription = null,
+                                        tint = if (state.config.blockShortsAndReels) FocusCyan else OnAmoledMuted,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        "Shorts & Reels Blocker",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = OnAmoled
+                                    )
+                                    Text(
+                                        "Blocks vertical short feeds while keeping full lectures playable",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnAmoledMuted
+                                    )
+                                }
                             }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = state.config.blockShortsAndReels,
+                                onCheckedChange = viewModel::setBlockShortsAndReels,
+                                enabled = isRuleEditingAllowed,
+                                modifier = Modifier.testTag("shorts_reels_switch")
+                            )
                         }
-                        Spacer(Modifier.width(8.dp))
-                        Switch(
-                            checked = state.config.blockShortsAndReels,
-                            onCheckedChange = viewModel::setBlockShortsAndReels,
-                            enabled = isRuleEditingAllowed,
-                            modifier = Modifier.testTag("shorts_reels_switch")
-                        )
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SurfaceBadge("YT Shorts", FocusCyan, state.config.blockShortsAndReels)
+                            SurfaceBadge("IG Reels", FocusCyan, state.config.blockShortsAndReels)
+                            SurfaceBadge("Browser /shorts", FocusCyan, state.config.blockShortsAndReels)
+                        }
                     }
                 }
 
                 Spacer(Modifier.height(12.dp))
+
+                // Card B: Regain-Style YouTube Study Channels Only
+                PremiumGlowCard(
+                    accentColor = if (state.config.youtubeStudyModeEnabled) FocusIndigo else OnAmoledSubtle,
+                    borderColor = if (state.config.youtubeStudyModeEnabled) FocusIndigo.copy(alpha = 0.45f) else AmoledOutlineSubtle,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("youtube_study_mode_card")
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(RoundedCornerShape(11.dp))
+                                        .background(
+                                            if (state.config.youtubeStudyModeEnabled) FocusIndigo.copy(alpha = 0.18f) else AmoledSurfaceHigh
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Filled.School,
+                                        contentDescription = null,
+                                        tint = if (state.config.youtubeStudyModeEnabled) FocusIndigo else OnAmoledMuted,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        "YouTube Study Channels Only",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = OnAmoled
+                                    )
+                                    Text(
+                                        "Blocks entertainment videos — only your study channels play",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnAmoledMuted
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = state.config.youtubeStudyModeEnabled,
+                                onCheckedChange = viewModel::setYoutubeStudyModeEnabled,
+                                enabled = isRuleEditingAllowed,
+                                modifier = Modifier.testTag("youtube_study_mode_switch")
+                            )
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        SegmentedModeBar(
+                            options = listOf("Channels Only", "+ Study Keywords"),
+                            selectedIndex = if (state.config.youtubeStrictChannelsOnly) 0 else 1,
+                            onSelect = { idx ->
+                                if (isRuleEditingAllowed) {
+                                    viewModel.setYoutubeStrictChannelsOnly(idx == 0)
+                                }
+                            },
+                            enabled = isRuleEditingAllowed,
+                            accentColor = FocusIndigo,
+                            testTagPrefix = "yt_strict_mode_seg"
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = customYoutubeChannelInput,
+                                onValueChange = { customYoutubeChannelInput = it },
+                                label = { Text("Add channel name or @handle") },
+                                placeholder = { Text("e.g. Physics Wallah") },
+                                singleLine = true,
+                                enabled = isRuleEditingAllowed,
+                                shape = RoundedCornerShape(12.dp),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        if (viewModel.addAllowedYoutubeChannel(customYoutubeChannelInput)) {
+                                            customYoutubeChannelInput = ""
+                                        }
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("yt_channel_input")
+                            )
+                            Button(
+                                onClick = {
+                                    if (viewModel.addAllowedYoutubeChannel(customYoutubeChannelInput)) {
+                                        customYoutubeChannelInput = ""
+                                    }
+                                },
+                                enabled = isRuleEditingAllowed,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = FocusIndigo,
+                                    contentColor = AmoledBlack
+                                ),
+                                modifier = Modifier
+                                    .height(52.dp)
+                                    .testTag("add_yt_channel_button")
+                            ) {
+                                Icon(Icons.Filled.Add, contentDescription = "Add channel", modifier = Modifier.size(18.dp))
+                            }
+                        }
+
+                        if (state.config.allowedYoutubeChannels.isNotEmpty()) {
+                            Spacer(Modifier.height(12.dp))
+                            SectionLabel("Allowed Channels (${state.config.allowedYoutubeChannels.size})")
+                            Spacer(Modifier.height(4.dp))
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                state.config.allowedYoutubeChannels.sortedBy { it.lowercase() }.forEach { ch ->
+                                    FilterChip(
+                                        selected = true,
+                                        onClick = {
+                                            if (isRuleEditingAllowed) viewModel.removeAllowedYoutubeChannel(ch)
+                                        },
+                                        enabled = isRuleEditingAllowed,
+                                        label = { Text(ch) },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.OndemandVideo, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        },
+                                        trailingIcon = {
+                                            Icon(Icons.Filled.Close, contentDescription = "Remove $ch", modifier = Modifier.size(14.dp))
+                                        },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = FocusIndigo.copy(alpha = 0.22f),
+                                            selectedLabelColor = OnAmoled,
+                                            selectedLeadingIconColor = FocusIndigo,
+                                            selectedTrailingIconColor = OnAmoledMuted
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+                        SectionLabel("Quick-Add Study Channels")
+                        Spacer(Modifier.height(4.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            FocusLockManager.PRESET_STUDY_CHANNELS.forEach { preset ->
+                                val isAdded = state.config.allowedYoutubeChannels.any { it.equals(preset, ignoreCase = true) }
+                                FilterChip(
+                                    selected = isAdded,
+                                    onClick = { if (isRuleEditingAllowed) viewModel.toggleAllowedYoutubeChannel(preset) },
+                                    enabled = isRuleEditingAllowed,
+                                    label = { Text(preset, fontSize = 12.sp) },
+                                    leadingIcon = if (isAdded) {
+                                        { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                    } else {
+                                        { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = FocusIndigo.copy(alpha = 0.2f),
+                                        selectedLabelColor = FocusIndigo,
+                                        selectedLeadingIconColor = FocusIndigo
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(14.dp))
 
                 // Mode Switch
                 SegmentedModeBar(
@@ -733,7 +1004,9 @@ fun FocusLockScreen(
                         value = state.appSearchQuery,
                         onValueChange = viewModel::updateAppSearchQuery,
                         label = { Text("Search installed apps") },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = OnAmoledMuted) },
                         singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(10.dp))
@@ -766,7 +1039,7 @@ fun FocusLockScreen(
                                                 if (isEditingStudyToolsPicker) viewModel.toggleAllowedStudyTool(appInfo.packageName)
                                                 else viewModel.togglePackageSelection(appInfo.packageName)
                                             }
-                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Checkbox(
@@ -781,6 +1054,13 @@ fun FocusLockScreen(
                                         Column(Modifier.weight(1f)) {
                                             Text(appInfo.label, style = MaterialTheme.typography.titleSmall, color = OnAmoled, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                             Text(appInfo.packageName, style = MaterialTheme.typography.labelSmall, color = OnAmoledSubtle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                        if (checked) {
+                                            SurfaceBadge(
+                                                text = if (isEditingStudyToolsPicker) "Study Tool" else "Guarded",
+                                                color = if (isEditingStudyToolsPicker) FocusCyan else FocusEmerald,
+                                                active = true
+                                            )
                                         }
                                     }
                                     if (i < filteredApps.lastIndex) {
@@ -1066,6 +1346,95 @@ fun FocusLockScreen(
                 if (ok) showPasswordExitDialog = false
                 ok
             }
+        )
+    }
+}
+
+@Composable
+private fun GuardPillarStat(
+    label: String,
+    value: String,
+    isActive: Boolean,
+    accent: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (isActive) accent.copy(alpha = 0.12f) else AmoledSurfaceHigh,
+        border = BorderStroke(0.75.dp, if (isActive) accent.copy(alpha = 0.4f) else AmoledOutlineSubtle),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isActive) accent else OnAmoledSubtle,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = value,
+                style = TabularStatStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold),
+                color = if (isActive) OnAmoled else OnAmoledMuted,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun PermissionDotPill(
+    label: String,
+    ok: Boolean
+) {
+    val color = if (ok) FocusEmerald else FocusAmber
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = color.copy(alpha = 0.1f),
+        border = BorderStroke(0.6.dp, color.copy(alpha = 0.35f))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .clip(CircleShape)
+                    .background(color)
+            )
+            Text(
+                text = label,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (ok) OnAmoled else color
+            )
+        }
+    }
+}
+
+@Composable
+private fun SurfaceBadge(
+    text: String,
+    color: Color,
+    active: Boolean
+) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = if (active) color.copy(alpha = 0.14f) else AmoledSurfaceHigh,
+        border = BorderStroke(0.6.dp, if (active) color.copy(alpha = 0.4f) else AmoledOutlineSubtle)
+    ) {
+        Text(
+            text = text,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Medium,
+            color = if (active) color else OnAmoledSubtle,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
         )
     }
 }
