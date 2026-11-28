@@ -66,6 +66,7 @@ jobs:
         env:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           import base64, os, shutil, sys
 
@@ -112,7 +113,11 @@ jobs:
               sys.exit(1)
           PY
 
-          SHA1_HEX=$(keytool -list -v -keystore "$HOME/.android/debug.keystore" -alias androiddebugkey -storepass android -keypass android | awk '/SHA1:/ {gsub(":", "", $2); print tolower($2)}')
+          SHA1_HEX=$(keytool -list -v -keystore "$HOME/.android/debug.keystore" -alias androiddebugkey -storepass android -keypass android | grep -iE 'SHA1:|SHA-1:' | grep -oE '([0-9a-fA-F]{2}:){19}[0-9a-fA-F]{2}' | head -n 1 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          if [ -z "${SHA1_HEX}" ]; then
+            echo "::error::Could not read SHA-1 from $HOME/.android/debug.keystore."
+            exit 1
+          fi
           echo "Debug APK signing SHA-1: ${SHA1_HEX}"
           if ! grep -qi "${SHA1_HEX}" app/google-services.json; then
             echo "::error::Signing keystore SHA-1 (${SHA1_HEX}) is not registered in app/google-services.json. Google Sign-In would fail at runtime."
@@ -120,18 +125,33 @@ jobs:
           fi
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: |
+          ANDROID_USER_HOME="$HOME/.android" gradle assembleDebug --stacktrace --no-build-cache \
+            -Pandroid.injected.signing.store.file="$HOME/.android/debug.keystore" \
+            -Pandroid.injected.signing.store.password=android \
+            -Pandroid.injected.signing.key.alias=androiddebugkey \
+            -Pandroid.injected.signing.key.password=android
 
       - name: Verify APK signing SHA-1 matches google-services.json
         run: |
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
-          if [ -n "$APKSIGNER" ]; then
-            APK_SHA1=$("$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | awk -F': ' '/SHA-1 digest:/ {print tolower($2); exit}')
-            echo "Built APK SHA-1: ${APK_SHA1}"
-            if [ -n "${APK_SHA1}" ] && ! grep -qi "${APK_SHA1}" app/google-services.json; then
-              echo "::error::Built APK SHA-1 (${APK_SHA1}) does not match app/google-services.json!"
-              exit 1
-            fi
+          set -euo pipefail
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          APKSIGNER=$(find "${SDK_DIR}/build-tools" -name apksigner 2>/dev/null | sort -V | tail -n 1 || true)
+          if [ -z "${APKSIGNER}" ]; then
+            echo "::warning::apksigner not found under ${SDK_DIR}/build-tools; skipping APK signature verification."
+            exit 0
+          fi
+          CERTS_OUT=$("${APKSIGNER}" verify --print-certs app/build/outputs/apk/debug/app-debug.apk)
+          echo "${CERTS_OUT}"
+          APK_SHA1=$(printf '%s\n' "${CERTS_OUT}" | grep -i 'SHA-1 digest' | grep -oE '[0-9a-fA-F]{40}' | head -n 1 | tr '[:upper:]' '[:lower:]')
+          echo "Built APK SHA-1: ${APK_SHA1}"
+          if [ -z "${APK_SHA1}" ]; then
+            echo "::error::Could not parse SHA-1 digest from apksigner output."
+            exit 1
+          fi
+          if ! grep -qi "${APK_SHA1}" app/google-services.json; then
+            echo "::error::Built APK SHA-1 (${APK_SHA1}) does not match app/google-services.json!"
+            exit 1
           fi
 
       - name: Upload debug APK
