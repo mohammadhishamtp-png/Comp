@@ -87,10 +87,18 @@ data class FocusLockWindow(
     val isEnabled: Boolean = true
 )
 
+data class FocusInterruptionEvent(
+    val timestampMillis: Long,
+    val subjectName: String,
+    val reason: String
+)
+
 data class FocusLockConfig(
     val isMasterEnabled: Boolean = false,
     val mode: LockMode = LockMode.BLOCK_LIST,
     val selectedPackages: Set<String> = emptySet(),
+    val allowedStudyTools: Set<String> = emptySet(),
+    val blockShortsAndReels: Boolean = false,
     val windows: List<FocusLockWindow> = listOf(
         FocusLockWindow(
             id = "default_study_window",
@@ -105,7 +113,8 @@ data class FocusLockConfig(
     val unlockCooldownEndMillis: Long = 0L,
     val temporaryUnlockUntilMillis: Long = 0L,
     val quickLockUntilMillis: Long = 0L,
-    val hasExitPassword: Boolean = false
+    val hasExitPassword: Boolean = false,
+    val interruptionEvents: List<FocusInterruptionEvent> = emptyList()
 )
 
 data class InstalledAppInfo(
@@ -154,4 +163,133 @@ data class WeeklyDashboardStats(
     val totalWeeklyFocusMinutes: Int = 0,
     val totalWeeklyCompletedBlocks: Int = 0,
     val totalWeeklyBlockedAttempts: Int = 0
+)
+
+enum class StudyTimerMode {
+    STOPWATCH,
+    POMODORO,
+    COUNTDOWN
+}
+
+enum class SoundscapeType(val label: String, val subtitle: String) {
+    NONE("Off", "Silent"),
+    BROWN_NOISE("Brown Noise", "Deep warm focus mask"),
+    SOFT_RAIN("Soft Rain", "Gentle ambient rain"),
+    TONE_40HZ("40Hz Focus", "Subtle gamma pulse")
+}
+
+data class StudySubject(
+    val id: Long = 0,
+    val name: String,
+    val colorHex: Long,
+    val dailyTargetMinutes: Int = 90,
+    val sortOrder: Int = 0,
+    val isArchived: Boolean = false
+)
+
+data class StudySession(
+    val id: Long = 0,
+    val subjectId: Long,
+    val subjectName: String,
+    val subjectColorHex: Long,
+    val mode: StudyTimerMode = StudyTimerMode.STOPWATCH,
+    val startMillis: Long,
+    val endMillis: Long,
+    val durationSeconds: Int,
+    val dayEpoch: Long,
+    val interruptionsCount: Int = 0,
+    val notes: String = ""
+)
+
+data class StudyTodoItem(
+    val id: Long = 0,
+    val subjectId: Long,
+    val subjectName: String = "",
+    val subjectColorHex: Long = 0xFF2EE6A6L,
+    val title: String,
+    val dayEpoch: Long,
+    val isCompleted: Boolean = false,
+    val estimatedMinutes: Int = 30,
+    val createdAtMillis: Long = System.currentTimeMillis()
+)
+
+data class ExamGoal(
+    val id: Long = 0,
+    val title: String,
+    val targetDateEpoch: Long,
+    val targetDailyMinutes: Int = 240,
+    val createdAtMillis: Long = System.currentTimeMillis()
+)
+
+data class TimelineTenMinCell(
+    val hourOfDay: Int,
+    val slotIndex: Int, // 0..5 (00, 10, 20, 30, 40, 50)
+    val subjectName: String? = null,
+    val colorHex: Long? = null,
+    val minutesCovered: Int = 0,
+    val sessionId: Long? = null
+)
+
+data class HeatmapDayCell(
+    val dayEpoch: Long,
+    val dateLabel: String,
+    val focusedMinutes: Int,
+    val intensityLevel: Int // 0..4
+)
+
+data class SubjectBreakdownItem(
+    val subjectId: Long,
+    val subjectName: String,
+    val colorHex: Long,
+    val totalMinutes: Int,
+    val dailyTargetMinutes: Int,
+    val shareFraction: Float
+)
+
+data class StudyStatsOverview(
+    val todayStudyMinutes: Int = 0,
+    val weeklyStudyMinutes: Int = 0,
+    val dailyAverageMinutes: Int = 0,
+    val currentStreakDays: Int = 0,
+    val bestStreakDays: Int = 0,
+    val heatmapDays: List<HeatmapDayCell> = emptyList(),
+    val subjectBreakdown: List<SubjectBreakdownItem> = emptyList(),
+    val weeklyDailyStats: List<DailyFocusStat> = emptyList(),
+    val topBlockedApps: List<BlockedAppSummary> = emptyList(),
+    val totalWeeklyBlockedAttempts: Int = 0
+)
+
+enum class StudyMemberStatus {
+    STUDYING,
+    BREAK,
+    OFFLINE
+}
+
+data class StudyGroupMember(
+    val id: String,
+    val name: String,
+    val status: StudyMemberStatus,
+    val activeSubject: String,
+    val subjectColorHex: Long,
+    val todayMinutes: Int,
+    val isMe: Boolean = false,
+    val lastNudgeFromMeMillis: Long = 0L
+)
+
+data class StudyNudgeEvent(
+    val id: String,
+    val fromName: String,
+    val toName: String,
+    val message: String,
+    val timestampMillis: Long
+)
+
+data class StudyRoom(
+    val id: String,
+    val name: String,
+    val code: String,
+    val description: String,
+    val dailyGoalMinutes: Int,
+    val members: List<StudyGroupMember>,
+    val recentNudges: List<StudyNudgeEvent> = emptyList()
 )

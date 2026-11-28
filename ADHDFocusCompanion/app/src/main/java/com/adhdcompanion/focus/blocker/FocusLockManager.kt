@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.util.Base64
 import com.adhdcompanion.focus.alarm.AlarmScheduler
 import com.adhdcompanion.focus.model.BlockedAppEvent
+import com.adhdcompanion.focus.model.FocusInterruptionEvent
 import com.adhdcompanion.focus.model.FocusLockConfig
 import com.adhdcompanion.focus.model.FocusLockWindow
 import com.adhdcompanion.focus.model.InstalledAppInfo
@@ -47,6 +48,11 @@ class FocusLockManager private constructor(context: Context) {
     private val _blockedEvents = MutableStateFlow(loadBlockedEvents())
     val blockedEvents: StateFlow<List<BlockedAppEvent>> = _blockedEvents.asStateFlow()
 
+    @Volatile
+    private var sessionStrictLockSubject: String? = null
+    @Volatile
+    private var sessionStrictLockEndMillis: Long = 0L
+
     @Suppress("USELESS_ELVIS")
     @Synchronized
     private fun loadConfig(): FocusLockConfig {
@@ -63,9 +69,11 @@ class FocusLockManager private constructor(context: Context) {
         return parsed.copy(
             mode = parsed.mode ?: LockMode.BLOCK_LIST,
             selectedPackages = parsed.selectedPackages ?: emptySet(),
+            allowedStudyTools = parsed.allowedStudyTools ?: emptySet(),
             windows = parsed.windows ?: FocusLockConfig().windows,
             cooldownMinutes = normalizedWait,
-            hasExitPassword = hasPwd
+            hasExitPassword = hasPwd,
+            interruptionEvents = parsed.interruptionEvents ?: emptyList()
         )
     }
 
@@ -163,6 +171,10 @@ class FocusLockManager private constructor(context: Context) {
 
     fun evaluateNow(nowMillis: Long = System.currentTimeMillis()): LockEvaluationState {
         val current = _config.value
+        if (sessionStrictLockEndMillis > 0L && nowMillis >= sessionStrictLockEndMillis) {
+            sessionStrictLockEndMillis = 0L
+            sessionStrictLockSubject = null
+        }
         if ((current.unlockCooldownEndMillis > 0L && nowMillis >= current.unlockCooldownEndMillis) ||
             (current.temporaryUnlockUntilMillis > 0L && nowMillis >= current.temporaryUnlockUntilMillis) ||
             (current.quickLockUntilMillis > 0L && nowMillis >= current.quickLockUntilMillis)
@@ -332,14 +344,59 @@ class FocusLockManager private constructor(context: Context) {
         return evaluateAndSyncState(appContext)
     }
 
+    @Synchronized
+    fun toggleAllowedStudyTool(packageName: String): Boolean {
+        return updateConfigIfAllowed { cfg ->
+            val next = cfg.allowedStudyTools.toMutableSet()
+            if (packageName in next) next.remove(packageName) else next.add(packageName)
+            cfg.copy(allowedStudyTools = next)
+        }
+    }
+
+    @Synchronized
+    fun setBlockShortsAndReels(enabled: Boolean): Boolean {
+        return updateConfigIfAllowed { cfg ->
+            cfg.copy(blockShortsAndReels = enabled)
+        }
+    }
+
+    @Synchronized
+    fun startSessionStrictLock(subjectName: String, durationMinutes: Int = 180): LockEvaluationState {
+        val now = System.currentTimeMillis()
+        sessionStrictLockSubject = subjectName.trim().ifBlank { "Study" }
+        sessionStrictLockEndMillis = now + durationMinutes.coerceIn(5, 8 * 60) * 60_000L
+        return evaluateAndSyncState(appContext)
+    }
+
+    @Synchronized
+    fun stopSessionStrictLock() {
+        sessionStrictLockSubject = null
+        sessionStrictLockEndMillis = 0L
+        evaluateAndSyncState(appContext)
+    }
+
+    @Synchronized
+    fun recordInterruption(subjectName: String, reason: String) {
+        val current = _config.value
+        val event = FocusInterruptionEvent(
+            timestampMillis = System.currentTimeMillis(),
+            subjectName = subjectName.ifBlank { "Study" },
+            reason = reason.ifBlank { "Session paused" }
+        )
+        val trimmed = (listOf(event) + current.interruptionEvents).take(40)
+        saveConfig(current.copy(interruptionEvents = trimmed))
+    }
+
     fun isPackageBlockedNow(packageName: String, essentialPackages: Set<String>): Boolean {
         if (packageName.isBlank() || packageName == appContext.packageName) return false
         if (packageName in essentialPackages) return false
 
+        val cfg = _config.value
+        if (packageName in cfg.allowedStudyTools) return false
+
         val eval = evaluateNow()
         if (!eval.isBlockingActive) return false
 
-        val cfg = _config.value
         return when (cfg.mode) {
             LockMode.BLOCK_LIST -> packageName in cfg.selectedPackages
             LockMode.ALLOW_LIST -> packageName !in cfg.selectedPackages
@@ -384,12 +441,18 @@ class FocusLockManager private constructor(context: Context) {
     }
 
     private fun computeEvaluation(cfg: FocusLockConfig, nowMillis: Long): LockEvaluationState {
-        if (!cfg.isMasterEnabled) {
+        val hasSessionStrictLock = sessionStrictLockEndMillis > nowMillis && sessionStrictLockSubject != null
+        if (!cfg.isMasterEnabled && !hasSessionStrictLock) {
             return LockEvaluationState(isInScheduledWindow = false, isBlockingActive = false)
         }
-        val scheduledWindow = findActiveWindow(cfg.windows, nowMillis)
-        val hasQuickLock = cfg.quickLockUntilMillis > nowMillis
+        val scheduledWindow = if (cfg.isMasterEnabled) findActiveWindow(cfg.windows, nowMillis) else null
+        val hasQuickLock = cfg.isMasterEnabled && cfg.quickLockUntilMillis > nowMillis
         val activeWindow = when {
+            hasSessionStrictLock -> buildSessionLockWindow(
+                subject = sessionStrictLockSubject ?: "Study",
+                endMillis = sessionStrictLockEndMillis,
+                nowMillis = nowMillis
+            )
             hasQuickLock && scheduledWindow == null -> buildQuickLockWindow(cfg.quickLockUntilMillis, nowMillis)
             hasQuickLock && scheduledWindow != null -> {
                 val scheduledEndMs = computeWindowEndMillis(scheduledWindow, nowMillis)
@@ -423,6 +486,20 @@ class FocusLockManager private constructor(context: Context) {
             cooldownRemainingSeconds = cooldownRemainingSec,
             isTemporaryUnlocked = isTempUnlocked,
             tempUnlockRemainingSeconds = tempRemainingSec
+        )
+    }
+
+    private fun buildSessionLockWindow(subject: String, endMillis: Long, nowMillis: Long): FocusLockWindow {
+        val zone = ZoneId.systemDefault()
+        val nowLdt = LocalDateTime.ofInstant(Instant.ofEpochMilli(nowMillis), zone)
+        val endLdt = LocalDateTime.ofInstant(Instant.ofEpochMilli(endMillis), zone)
+        return FocusLockWindow(
+            id = "session_strict_lock",
+            name = "Study Lock · $subject",
+            startMinuteOfDay = nowLdt.hour * 60 + nowLdt.minute,
+            endMinuteOfDay = endLdt.hour * 60 + endLdt.minute,
+            activeDays = setOf(nowLdt.dayOfWeek.value),
+            isEnabled = true
         )
     }
 

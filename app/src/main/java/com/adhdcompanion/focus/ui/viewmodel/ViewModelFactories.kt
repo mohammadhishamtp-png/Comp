@@ -12,6 +12,18 @@ import com.adhdcompanion.focus.di.AppContainer
  */
 object ViewModelFactories {
 
+    fun studyTimer(container: AppContainer) = viewModelFactory {
+        initializer { StudyTimerViewModel(container) }
+    }
+
+    fun stats(container: AppContainer) = viewModelFactory {
+        initializer { StatsViewModel(container) }
+    }
+
+    fun groups(container: AppContainer) = viewModelFactory {
+        initializer { GroupsViewModel(container) }
+    }
+
     fun now(container: AppContainer) = viewModelFactory {
         initializer { NowViewModel(container) }
     }

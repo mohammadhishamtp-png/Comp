@@ -61,6 +61,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
     private var lastLoggedPackage: String? = null
     private var lastHomeActionMs = 0L
     private var lastLaunchRedirectMs = 0L
+    private var lastShortsBackMs = 0L
     private var homeGracePackage: String? = null
     private var homeGraceUntilMs = 0L
     private var cachedEssentialPackages: Set<String> = emptySet()
@@ -158,10 +159,14 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
 
             val lockManager = FocusLockManager.getInstance(this)
             val eval = lockManager.evaluateNow()
+            val cfg = lockManager.config.value
             if (!eval.isBlockingActive) {
                 stopActiveMonitor()
                 if (activeShieldReason != REASON_TEST_SHIELD) {
                     removeOverlay()
+                }
+                if (cfg.blockShortsAndReels) {
+                    checkAndExitShortsOrReels(eventPkg)
                 }
                 return
             }
@@ -255,10 +260,65 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             return
         }
 
+        if (lockManager.config.value.blockShortsAndReels) {
+            val activePkg = rootPkg ?: candidatePackages.firstOrNull()
+            if (checkAndExitShortsOrReels(activePkg)) {
+                return
+            }
+        }
+
         // Only dismiss system overlay when our actual MainActivity is genuinely resumed in foreground
         if (isMainActivityResumed && overlayView != null && activeShieldReason != REASON_TEST_SHIELD) {
             removeOverlay()
         }
+    }
+
+    /**
+     * Gated user-opted Accessibility hook for short-form video feeds (YouTube Shorts & Instagram Reels).
+     * Exits only the Shorts/Reels feed via GLOBAL_ACTION_BACK so regular educational videos keep playing.
+     */
+    private fun checkAndExitShortsOrReels(foregroundPkg: String?): Boolean {
+        val pkg = foregroundPkg ?: return false
+        if (pkg != "com.google.android.youtube" && pkg != "com.instagram.android") return false
+        val root = runCatching { rootInActiveWindow }.getOrNull() ?: return false
+        val isShortFeed = hasShortsOrReelsNode(root, pkg, depth = 0)
+        if (!isShortFeed) return false
+
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastShortsBackMs > 950L) {
+            lastShortsBackMs = now
+            FocusLockManager.getInstance(this).recordBlockedAttempt(
+                packageName = "$pkg.shorts",
+                appLabel = if (pkg == "com.google.android.youtube") "YouTube Shorts" else "Instagram Reels"
+            )
+            performGlobalAction(GLOBAL_ACTION_BACK)
+        }
+        return true
+    }
+
+    private fun hasShortsOrReelsNode(node: AccessibilityNodeInfo?, pkg: String, depth: Int): Boolean {
+        if (node == null || depth > 7) return false
+        val viewId = runCatching { node.viewIdResourceName?.lowercase() }.getOrNull().orEmpty()
+        if (pkg == "com.google.android.youtube") {
+            if (viewId.contains("reel_recycler") ||
+                viewId.contains("reel_player_page_container") ||
+                viewId.contains("shorts_player")
+            ) {
+                return true
+            }
+        } else if (pkg == "com.instagram.android") {
+            if (viewId.contains("clips_viewer") ||
+                viewId.contains("clips_video_container") ||
+                viewId.contains("reel_viewer")
+            ) {
+                return true
+            }
+        }
+        val count = node.childCount.coerceAtMost(14)
+        for (i in 0 until count) {
+            if (hasShortsOrReelsNode(node.getChild(i), pkg, depth + 1)) return true
+        }
+        return false
     }
 
     private fun onRulesUpdated() {

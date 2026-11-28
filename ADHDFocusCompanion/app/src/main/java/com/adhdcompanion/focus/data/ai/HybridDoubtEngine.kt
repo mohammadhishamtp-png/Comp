@@ -349,19 +349,19 @@ class HybridDoubtEngine(
                     if (data == "[DONE]") break
                     if (data.isBlank()) continue
 
-                    val deltaText = runCatching {
-                        val root = JsonParser.parseString(data).asJsonObject
-                        val choices = root.getAsJsonArray("choices") ?: return@runCatching null
-                        if (choices.size() == 0) return@runCatching null
-                        val delta = choices[0].asJsonObject.getAsJsonObject("delta") ?: return@runCatching null
-                        delta.get("content")?.takeIf { !it.isJsonNull }?.asString
-                    }.getOrNull()
+                val deltaText = runCatching {
+                    val root = JsonParser.parseString(data).asJsonObject
+                    val choices = root.getAsJsonArray("choices") ?: return@runCatching null
+                    if (choices.size() == 0) return@runCatching null
+                    val delta = choices[0].asJsonObject.getAsJsonObject("delta") ?: return@runCatching null
+                    delta.get("content")?.takeIf { !it.isJsonNull }?.asString
+                }.getOrNull()
 
-                    if (!deltaText.isNullOrEmpty()) {
-                        accumulated.append(deltaText)
-                        onAccumulated(accumulated.toString())
-                    }
+                if (!deltaText.isNullOrEmpty()) {
+                    accumulated.append(deltaText)
+                    onAccumulated(accumulated.toString())
                 }
+            }
                 val result = accumulated.toString().trim()
                 if (result.isBlank()) throw IOException("Groq stream completed with empty output")
                 result
@@ -435,25 +435,25 @@ class HybridDoubtEngine(
                     val data = line.removePrefix("data:").trim()
                     if (data.isBlank() || data == "[DONE]") continue
 
-                    val chunkText = runCatching {
-                        val root = JsonParser.parseString(data).asJsonObject
-                        val candidates = root.getAsJsonArray("candidates") ?: return@runCatching null
-                        if (candidates.size() == 0) return@runCatching null
-                        val content = candidates[0].asJsonObject.getAsJsonObject("content") ?: return@runCatching null
-                        val parts = content.getAsJsonArray("parts") ?: return@runCatching null
-                        buildString {
-                            for (part in parts) {
-                                val t = part.asJsonObject.get("text")?.takeIf { !it.isJsonNull }?.asString
-                                if (!t.isNullOrEmpty()) append(t)
-                            }
+                val chunkText = runCatching {
+                    val root = JsonParser.parseString(data).asJsonObject
+                    val candidates = root.getAsJsonArray("candidates") ?: return@runCatching null
+                    if (candidates.size() == 0) return@runCatching null
+                    val content = candidates[0].asJsonObject.getAsJsonObject("content") ?: return@runCatching null
+                    val parts = content.getAsJsonArray("parts") ?: return@runCatching null
+                    buildString {
+                        for (part in parts) {
+                            val t = part.asJsonObject.get("text")?.takeIf { !it.isJsonNull }?.asString
+                            if (!t.isNullOrEmpty()) append(t)
                         }
-                    }.getOrNull()
-
-                    if (!chunkText.isNullOrEmpty()) {
-                        accumulated.append(chunkText)
-                        onAccumulated(accumulated.toString())
                     }
+                }.getOrNull()
+
+                if (!chunkText.isNullOrEmpty()) {
+                    accumulated.append(chunkText)
+                    onAccumulated(accumulated.toString())
                 }
+            }
                 val result = accumulated.toString().trim()
                 if (result.isBlank()) throw IOException("Gemini stream returned empty text")
                 result

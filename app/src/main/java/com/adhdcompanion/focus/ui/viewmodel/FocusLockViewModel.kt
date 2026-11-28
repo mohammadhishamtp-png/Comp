@@ -153,6 +153,16 @@ class FocusLockViewModel(
         if (!updated) notifyLocked()
     }
 
+    fun toggleAllowedStudyTool(packageName: String) {
+        val updated = lockManager.toggleAllowedStudyTool(packageName)
+        if (!updated) notifyLocked()
+    }
+
+    fun setBlockShortsAndReels(enabled: Boolean) {
+        val updated = lockManager.setBlockShortsAndReels(enabled)
+        if (!updated) notifyLocked()
+    }
+
     fun saveWindow(
         existingId: String?,
         name: String,

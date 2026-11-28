@@ -10,8 +10,11 @@ import android.speech.tts.TextToSpeech
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,19 +25,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -44,9 +50,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -57,11 +66,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.adhdcompanion.focus.alarm.AlarmScheduler
@@ -70,7 +81,20 @@ import com.adhdcompanion.focus.alarm.TtsAvailabilityStatus
 import com.adhdcompanion.focus.blocker.FocusBlockerAccessibilityService
 import com.adhdcompanion.focus.data.prefs.SecurePrefsManager
 import com.adhdcompanion.focus.di.AppContainer
+import com.adhdcompanion.focus.ui.components.AmoledCard
 import com.adhdcompanion.focus.ui.components.RotatingClockPicker
+import com.adhdcompanion.focus.ui.components.SectionLabel
+import com.adhdcompanion.focus.ui.theme.AmoledBlack
+import com.adhdcompanion.focus.ui.theme.AmoledOutline
+import com.adhdcompanion.focus.ui.theme.AmoledOutlineSubtle
+import com.adhdcompanion.focus.ui.theme.AmoledSurface
+import com.adhdcompanion.focus.ui.theme.AmoledSurfaceElevated
+import com.adhdcompanion.focus.ui.theme.FocusCoral
+import com.adhdcompanion.focus.ui.theme.FocusCoralContainer
+import com.adhdcompanion.focus.ui.theme.FocusEmerald
+import com.adhdcompanion.focus.ui.theme.FocusEmeraldDim
+import com.adhdcompanion.focus.ui.theme.OnAmoled
+import com.adhdcompanion.focus.ui.theme.OnAmoledMuted
 import kotlinx.coroutines.launch
 import java.util.Calendar
 import java.util.Locale
@@ -88,6 +112,7 @@ fun SettingsScreen(
     val prefs = container.prefs
     val scheduler = remember { AlarmScheduler(context) }
     val scope = rememberCoroutineScope()
+    val currentUser = container.authManager.currentUser
 
     val initialParts = remember {
         val raw = prefs.morningBriefingTime ?: "07:30"
@@ -115,6 +140,7 @@ fun SettingsScreen(
     var alarmStatusMessage by remember { mutableStateOf<String?>(null) }
     var ttsStatus by remember { mutableStateOf<TtsAvailabilityStatus?>(null) }
     var savedMessage by remember { mutableStateOf<String?>(null) }
+    var isSigningOut by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         AlarmService.checkTtsAvailability(context) { status ->
@@ -174,9 +200,18 @@ fun SettingsScreen(
     val accessibilityEnabled = FocusBlockerAccessibilityService.isServiceEnabled(context)
     val lockEval = container.focusLockManager.evaluateNow()
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(AmoledBlack)
+    ) {
         TopAppBar(
-            title = { Text("Settings") },
+            title = { Text("Settings", fontWeight = FontWeight.Bold) },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = AmoledBlack,
+                titleContentColor = OnAmoled,
+                navigationIconContentColor = OnAmoled
+            ),
             navigationIcon = {
                 IconButton(onClick = onBack) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -188,12 +223,112 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp)
+                .padding(horizontal = 20.dp, vertical = 14.dp)
         ) {
+            // 0. Google Account & Cloud Sync
+            AmoledCard(
+                containerColor = AmoledSurface,
+                borderColor = AmoledOutlineSubtle,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(FocusEmeraldDim),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Filled.AccountCircle,
+                                contentDescription = null,
+                                tint = FocusEmerald,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = currentUser?.displayName?.takeIf { it.isNotBlank() } ?: "Signed-in Scholar",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = OnAmoled,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = currentUser?.email ?: "Google Account connected",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = OnAmoledMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = FocusEmeraldDim
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Filled.CloudDone,
+                                    contentDescription = null,
+                                    tint = FocusEmerald,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    "Synced",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = FocusEmerald
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                isSigningOut = true
+                                container.authManager.signOut()
+                                isSigningOut = false
+                            }
+                        },
+                        enabled = !isSigningOut,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(0.75.dp, AmoledOutline),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_sign_out_button")
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Logout,
+                            contentDescription = null,
+                            tint = OnAmoledMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (isSigningOut) "Signing out…" else "Sign Out",
+                            color = OnAmoled
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+
             // 1. Focus Lock Quick Access Card
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            AmoledCard(
+                containerColor = AmoledSurface,
+                borderColor = FocusEmerald.copy(alpha = 0.35f),
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(onClick = onOpenFocusLock)
@@ -206,7 +341,7 @@ fun SettingsScreen(
                     Icon(
                         Icons.Filled.Shield,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                        tint = FocusEmerald
                     )
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
@@ -214,7 +349,7 @@ fun SettingsScreen(
                             "Scheduled App Blocker & Anti-Impulse Lock",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                            color = OnAmoled
                         )
                         Text(
                             when {
@@ -223,13 +358,13 @@ fun SettingsScreen(
                                 else -> "Tap to set up Accessibility Blocker & lock windows"
                             },
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                            color = OnAmoledMuted
                         )
                     }
                     Icon(
                         Icons.Filled.ChevronRight,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                        tint = OnAmoledMuted
                     )
                 }
             }
@@ -277,15 +412,14 @@ fun SettingsScreen(
 
             alarmStatusMessage?.let {
                 Spacer(Modifier.height(8.dp))
-                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = FocusEmerald)
             }
 
-            // TTS voice/engine availability warning if missing
             ttsStatus?.message?.let { ttsWarn ->
                 Spacer(Modifier.height(12.dp))
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                AmoledCard(
+                    containerColor = FocusCoralContainer,
+                    borderColor = FocusCoral.copy(alpha = 0.4f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(Modifier.padding(14.dp)) {
@@ -293,43 +427,42 @@ fun SettingsScreen(
                             Icon(
                                 Icons.Filled.Warning,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onErrorContainer
+                                tint = FocusCoral
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
                                 "Text-to-Speech Setup Needed",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onErrorContainer
+                                color = FocusCoral
                             )
                         }
                         Spacer(Modifier.height(6.dp))
                         Text(
                             ttsWarn,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer
+                            color = OnAmoled
                         )
                         Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = {
+                        OutlinedButton(
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }.onFailure {
                                     runCatching {
                                         context.startActivity(
-                                            Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+                                            Intent("com.android.settings.TTS_SETTINGS")
                                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                         )
-                                    }.onFailure {
-                                        runCatching {
-                                            context.startActivity(
-                                                Intent("com.android.settings.TTS_SETTINGS")
-                                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            )
-                                        }
                                     }
                                 }
-                            ) {
-                                Text("Install / Check Voice Data")
-                            }
+                            },
+                            border = BorderStroke(0.75.dp, FocusCoral.copy(alpha = 0.5f))
+                        ) {
+                            Text("Install / Check Voice Data", color = OnAmoled)
                         }
                     }
                 }
@@ -339,7 +472,7 @@ fun SettingsScreen(
                 Spacer(Modifier.height(10.dp))
                 Text(
                     "Exact alarms are currently restricted by the system for this app.",
-                    color = MaterialTheme.colorScheme.error,
+                    color = FocusCoral,
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(Modifier.height(6.dp))
@@ -354,18 +487,20 @@ fun SettingsScreen(
             }
 
             Spacer(Modifier.height(24.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(24.dp))
+            HorizontalDivider(thickness = 0.75.dp, color = AmoledOutlineSubtle)
+            Spacer(Modifier.height(20.dp))
 
             // 3. Hybrid AI Keys (Groq Primary + Gemini Image/Fallback)
-            Text("Groq API key (Fast text primary)", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            SectionLabel("Hybrid AI Study Engine")
             Spacer(Modifier.height(6.dp))
+            Text("Groq API key (Fast text primary)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = OnAmoled)
+            Spacer(Modifier.height(4.dp))
             Text(
                 "Used first for Doubt Solver text streaming (openai/gpt-oss-120b). Stored encrypted on this device only.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                style = MaterialTheme.typography.bodySmall,
+                color = OnAmoledMuted
             )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             OutlinedTextField(
                 value = groqApiKey,
                 onValueChange = { groqApiKey = it },
@@ -385,15 +520,15 @@ fun SettingsScreen(
                     .testTag("groq_api_key_input")
             )
 
-            Spacer(Modifier.height(20.dp))
-            Text("Gemini API key (Images & fallback)", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(18.dp))
+            Text("Gemini API key (Images & fallback)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = OnAmoled)
+            Spacer(Modifier.height(4.dp))
             Text(
                 "Used for photo doubts (gemini-3.5-flash-lite), Planner/Stuck, and automatic Groq fallback.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                style = MaterialTheme.typography.bodySmall,
+                color = OnAmoledMuted
             )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             OutlinedTextField(
                 value = apiKey,
                 onValueChange = { apiKey = it },
@@ -420,27 +555,28 @@ fun SettingsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("Use lighter fallback model", style = MaterialTheme.typography.titleMedium)
+                    Text("Use lighter fallback model", style = MaterialTheme.typography.titleSmall, color = OnAmoled)
                     Text(
                         "Prefer lighter Flash-Lite models (auto-discovers compatible models if needed).",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnAmoledMuted
                     )
                 }
                 Switch(checked = useFallback, onCheckedChange = { useFallback = it })
             }
 
-            Spacer(Modifier.height(22.dp))
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            Spacer(Modifier.height(18.dp))
+            AmoledCard(
+                containerColor = AmoledSurface,
+                borderColor = AmoledOutlineSubtle,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(Modifier.padding(16.dp)) {
                     Text(
                         "Offline LiteRT-LM Model (.litertlm)",
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = OnAmoled
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -450,16 +586,13 @@ fun SettingsScreen(
                             "No offline model loaded yet. Import a .litertlm model file for offline Doubt Solver fallback."
                         },
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (localModelInfo.exists) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
+                        color = if (localModelInfo.exists) FocusEmerald else OnAmoledMuted
                     )
                     Spacer(Modifier.height(10.dp))
                     OutlinedButton(
                         onClick = { modelPickerLauncher.launch(arrayOf("*/*")) },
                         enabled = !isImportingModel,
+                        border = BorderStroke(0.75.dp, AmoledOutline),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("settings_select_offline_model_button")
@@ -467,27 +600,27 @@ fun SettingsScreen(
                         if (isImportingModel) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(8.dp))
-                            Text("Importing .litertlm model…")
+                            Text("Importing .litertlm model…", color = OnAmoled)
                         } else {
-                            Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp), tint = OnAmoled)
                             Spacer(Modifier.width(8.dp))
-                            Text("Select Offline Model (.litertlm)")
+                            Text("Select Offline Model (.litertlm)", color = OnAmoled)
                         }
                     }
                     modelImportMessage?.let { msg ->
                         Spacer(Modifier.height(6.dp))
-                        Text(msg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                        Text(msg, style = MaterialTheme.typography.bodySmall, color = FocusEmerald)
                     }
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(22.dp))
+            HorizontalDivider(thickness = 0.75.dp, color = AmoledOutlineSubtle)
+            Spacer(Modifier.height(20.dp))
 
             // 4. Voice preference
-            Text("Voice", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(10.dp))
+            SectionLabel("Alarm Voice Engine")
+            Spacer(Modifier.height(8.dp))
             VoiceOptionRow(
                 label = "Gemini expressive voice (falls back automatically if offline)",
                 selected = voicePref == SecurePrefsManager.VOICE_GEMINI_WITH_FALLBACK,
@@ -499,7 +632,7 @@ fun SettingsScreen(
                 onSelect = { voicePref = SecurePrefsManager.VOICE_ANDROID_ONLY }
             )
 
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(24.dp))
             Button(
                 onClick = {
                     prefs.groqApiKey = groqApiKey.trim().ifBlank { null }
@@ -516,16 +649,22 @@ fun SettingsScreen(
                     }
                     savedMessage = "Settings saved."
                 },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = FocusEmerald,
+                    contentColor = AmoledBlack
+                ),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(50.dp)
                     .testTag("save_settings_button")
             ) {
-                Text("Save settings")
+                Text("Save settings", fontWeight = FontWeight.Bold)
             }
 
             savedMessage?.let {
                 Spacer(Modifier.height(10.dp))
-                Text(it, color = MaterialTheme.colorScheme.primary)
+                Text(it, color = FocusEmerald)
             }
 
             Spacer(Modifier.height(40.dp))
@@ -544,7 +683,7 @@ private fun VoiceOptionRow(label: String, selected: Boolean, onSelect: () -> Uni
     ) {
         RadioButton(selected = selected, onClick = onSelect)
         Spacer(Modifier.width(8.dp))
-        Text(label, style = MaterialTheme.typography.bodyLarge)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = OnAmoled)
     }
 }
 

@@ -1,0 +1,315 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidOptionalTimestamp(data, field) {
+      return !(field in data) || (data[field] is timestamp && data[field] <= request.time);
+    }
+
+    function isRoomMember(roomId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/studyRooms/$(roomId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/studyRooms/$(roomId)).data.memberUids;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasOnly([
+          'userId', 'displayName', 'email', 'dailyGoalMinutes', 'createdAt', 'updatedAt'
+        ]) &&
+        data.userId == userId &&
+        isValidString(data.displayName, 1, 60) &&
+        (!('email' in data) || isValidString(data.email, 0, 120)) &&
+        data.dailyGoalMinutes is int && data.dailyGoalMinutes >= 15 && data.dailyGoalMinutes <= 960 &&
+        isValidOptionalTimestamp(data, 'createdAt') &&
+        isValidOptionalTimestamp(data, 'updatedAt');
+    }
+
+    function isValidSubject(data, userId) {
+      return data.keys().hasOnly([
+          'userId', 'localId', 'name', 'colorHex', 'dailyTargetMinutes', 'sortOrder', 'archived', 'createdAt', 'updatedAt'
+        ]) &&
+        data.userId == userId &&
+        data.localId is int && data.localId >= 0 &&
+        isValidString(data.name, 1, 60) &&
+        data.colorHex is int &&
+        data.dailyTargetMinutes is int && data.dailyTargetMinutes >= 5 && data.dailyTargetMinutes <= 720 &&
+        data.sortOrder is int && data.sortOrder >= 0 &&
+        data.archived is bool &&
+        isValidOptionalTimestamp(data, 'createdAt') &&
+        isValidOptionalTimestamp(data, 'updatedAt');
+    }
+
+    function isValidSession(data, userId) {
+      return data.keys().hasOnly([
+          'userId', 'subjectId', 'subjectName', 'subjectColorHex', 'mode',
+          'startMillis', 'endMillis', 'durationSeconds', 'dayEpoch', 'interruptionsCount', 'notes', 'createdAt'
+        ]) &&
+        data.userId == userId &&
+        data.subjectId is int && data.subjectId >= 0 &&
+        isValidString(data.subjectName, 1, 60) &&
+        data.subjectColorHex is int &&
+        data.mode in ['STOPWATCH', 'POMODORO', 'COUNTDOWN'] &&
+        data.startMillis is int && data.startMillis > 0 &&
+        data.endMillis is int && data.endMillis >= data.startMillis &&
+        data.durationSeconds is int && data.durationSeconds >= 1 && data.durationSeconds <= 86400 &&
+        data.dayEpoch is int && data.dayEpoch > 0 &&
+        (!('interruptionsCount' in data) || (data.interruptionsCount is int && data.interruptionsCount >= 0)) &&
+        (!('notes' in data) || isValidString(data.notes, 0, 300)) &&
+        isValidOptionalTimestamp(data, 'createdAt');
+    }
+
+    function isValidTodo(data, userId) {
+      return data.keys().hasOnly([
+          'userId', 'localId', 'subjectId', 'subjectName', 'subjectColorHex',
+          'title', 'dayEpoch', 'completed', 'estimatedMinutes', 'createdAt', 'updatedAt'
+        ]) &&
+        data.userId == userId &&
+        data.localId is int && data.localId >= 0 &&
+        data.subjectId is int && data.subjectId >= 0 &&
+        (!('subjectName' in data) || isValidString(data.subjectName, 0, 60)) &&
+        (!('subjectColorHex' in data) || data.subjectColorHex is int) &&
+        isValidString(data.title, 1, 160) &&
+        data.dayEpoch is int && data.dayEpoch > 0 &&
+        data.completed is bool &&
+        data.estimatedMinutes is int && data.estimatedMinutes >= 1 && data.estimatedMinutes <= 480 &&
+        isValidOptionalTimestamp(data, 'createdAt') &&
+        isValidOptionalTimestamp(data, 'updatedAt');
+    }
+
+    function isValidExamGoal(data, userId) {
+      return data.keys().hasOnly([
+          'userId', 'localId', 'title', 'targetDateEpoch', 'targetDailyMinutes', 'createdAt', 'updatedAt'
+        ]) &&
+        data.userId == userId &&
+        data.localId is int && data.localId >= 0 &&
+        isValidString(data.title, 1, 100) &&
+        data.targetDateEpoch is int && data.targetDateEpoch > 0 &&
+        data.targetDailyMinutes is int && data.targetDailyMinutes >= 15 && data.targetDailyMinutes <= 960 &&
+        isValidOptionalTimestamp(data, 'createdAt') &&
+        isValidOptionalTimestamp(data, 'updatedAt');
+    }
+
+    function isValidDayBlock(data, userId) {
+      return data.keys().hasOnly([
+          'userId', 'dayEpoch', 'title', 'why', 'microStep', 'startMinuteOfDay',
+          'durationMinutes', 'category', 'decompressionBuffer', 'completed', 'createdAt', 'updatedAt'
+        ]) &&
+        data.userId == userId &&
+        data.dayEpoch is int && data.dayEpoch > 0 &&
+        isValidString(data.title, 1, 120) &&
+        (!('why' in data) || isValidString(data.why, 0, 300)) &&
+        (!('microStep' in data) || isValidString(data.microStep, 0, 300)) &&
+        data.startMinuteOfDay is int && data.startMinuteOfDay >= 0 && data.startMinuteOfDay < 1440 &&
+        data.durationMinutes is int && data.durationMinutes >= 1 && data.durationMinutes <= 720 &&
+        data.category in ['STUDY', 'CODING', 'MEDS', 'MEDITATION', 'MEAL', 'MOVEMENT', 'BUFFER', 'OTHER'] &&
+        data.decompressionBuffer is bool &&
+        data.completed is bool &&
+        isValidOptionalTimestamp(data, 'createdAt') &&
+        isValidOptionalTimestamp(data, 'updatedAt');
+    }
+
+    function isValidBrainDump(data, userId) {
+      return data.keys().hasOnly([
+          'userId', 'text', 'createdAtMillis', 'sentToPlanner', 'createdAt'
+        ]) &&
+        data.userId == userId &&
+        isValidString(data.text, 1, 600) &&
+        data.createdAtMillis is int && data.createdAtMillis > 0 &&
+        data.sentToPlanner is bool &&
+        isValidOptionalTimestamp(data, 'createdAt');
+    }
+
+    function isValidStudyRoomCreate(data) {
+      return data.keys().hasOnly([
+          'name', 'inviteCode', 'description', 'dailyGoalMinutes', 'ownerId', 'memberUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidString(data.name, 1, 60) &&
+        isValidString(data.inviteCode, 4, 12) &&
+        isValidString(data.description, 0, 160) &&
+        data.dailyGoalMinutes is int && data.dailyGoalMinutes >= 30 && data.dailyGoalMinutes <= 960 &&
+        data.ownerId == request.auth.uid &&
+        data.memberUids is list &&
+        data.memberUids.size() == 1 &&
+        request.auth.uid in data.memberUids &&
+        isValidOptionalTimestamp(data, 'createdAt') &&
+        isValidOptionalTimestamp(data, 'updatedAt');
+    }
+
+    function isValidRoomMember(data, memberUid) {
+      return data.keys().hasOnly([
+          'uid', 'displayName', 'status', 'activeSubject', 'subjectColorHex', 'todayMinutes', 'updatedAt'
+        ]) &&
+        data.uid == memberUid &&
+        isValidString(data.displayName, 1, 40) &&
+        data.status in ['STUDYING', 'BREAK', 'OFFLINE'] &&
+        isValidString(data.activeSubject, 1, 60) &&
+        data.subjectColorHex is int &&
+        data.todayMinutes is int && data.todayMinutes >= 0 && data.todayMinutes <= 1440 &&
+        isValidOptionalTimestamp(data, 'updatedAt');
+    }
+
+    function isValidNudge(data) {
+      return data.keys().hasOnly([
+          'fromUid', 'fromName', 'toUid', 'toName', 'message', 'createdAt'
+        ]) &&
+        data.fromUid == request.auth.uid &&
+        isValidString(data.fromName, 1, 40) &&
+        isValidString(data.toUid, 1, 80) &&
+        isValidString(data.toName, 1, 40) &&
+        isValidString(data.message, 1, 200) &&
+        isValidOptionalTimestamp(data, 'createdAt');
+    }
+
+    // Owner-only user root & private study data
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) && isValidUserProfile(request.resource.data, userId);
+      allow update: if isOwner(userId) && isValidUserProfile(request.resource.data, userId) &&
+        request.resource.data.userId == resource.data.userId &&
+        (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+      allow delete: if isOwner(userId);
+
+      match /subjects/{subjectId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidSubject(request.resource.data, userId);
+        allow update: if isOwner(userId) && isValidSubject(request.resource.data, userId) &&
+          request.resource.data.userId == resource.data.userId &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+        allow delete: if isOwner(userId);
+      }
+
+      match /sessions/{sessionId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidSession(request.resource.data, userId);
+        allow update: if isOwner(userId) && isValidSession(request.resource.data, userId) &&
+          request.resource.data.userId == resource.data.userId &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+        allow delete: if isOwner(userId);
+      }
+
+      match /todos/{todoId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidTodo(request.resource.data, userId);
+        allow update: if isOwner(userId) && isValidTodo(request.resource.data, userId) &&
+          request.resource.data.userId == resource.data.userId &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+        allow delete: if isOwner(userId);
+      }
+
+      match /examGoals/{goalId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidExamGoal(request.resource.data, userId);
+        allow update: if isOwner(userId) && isValidExamGoal(request.resource.data, userId) &&
+          request.resource.data.userId == resource.data.userId &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+        allow delete: if isOwner(userId);
+      }
+
+      match /blocks/{blockId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidDayBlock(request.resource.data, userId);
+        allow update: if isOwner(userId) && isValidDayBlock(request.resource.data, userId) &&
+          request.resource.data.userId == resource.data.userId &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+        allow delete: if isOwner(userId);
+      }
+
+      match /brainDumps/{dumpId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidBrainDump(request.resource.data, userId);
+        allow update: if isOwner(userId) && isValidBrainDump(request.resource.data, userId) &&
+          request.resource.data.userId == resource.data.userId &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt);
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    // Invite code -> roomId lookup (no list enumeration allowed)
+    match /roomInvites/{inviteCode} {
+      allow get: if isSignedIn();
+      allow list: if false;
+      allow create: if isSignedIn() &&
+        request.resource.data.keys().hasOnly(['inviteCode', 'roomId', 'ownerId', 'createdAt']) &&
+        request.resource.data.inviteCode == inviteCode &&
+        isValidString(inviteCode, 4, 12) &&
+        isValidString(request.resource.data.roomId, 1, 80) &&
+        request.resource.data.ownerId == request.auth.uid &&
+        isValidOptionalTimestamp(request.resource.data, 'createdAt');
+      allow update: if false;
+      allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+    }
+
+    // Shared YPT Study Rooms (membership-scoped reads, join/leave self-membership updates)
+    match /studyRooms/{roomId} {
+      allow get: if isSignedIn() && (request.auth.uid in resource.data.memberUids);
+      allow list: if isSignedIn() && (request.auth.uid in resource.data.memberUids);
+      allow create: if isSignedIn() && isValidStudyRoomCreate(request.resource.data);
+      allow update: if isSignedIn() && (
+        (
+          // Owner updating metadata without forging createdAt/ownerId
+          resource.data.ownerId == request.auth.uid &&
+          request.resource.data.ownerId == resource.data.ownerId &&
+          (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt) &&
+          isValidString(request.resource.data.name, 1, 60) &&
+          isValidString(request.resource.data.description, 0, 160) &&
+          request.resource.data.dailyGoalMinutes is int &&
+          request.resource.data.dailyGoalMinutes >= 30 &&
+          request.resource.data.dailyGoalMinutes <= 960 &&
+          request.resource.data.memberUids is list &&
+          request.resource.data.memberUids.size() <= 50 &&
+          isValidOptionalTimestamp(request.resource.data, 'updatedAt')
+        ) || (
+          // Signed-in user joining themselves via invite code (adding only own uid)
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'updatedAt']) &&
+          request.resource.data.memberUids is list &&
+          request.resource.data.memberUids.size() <= 50 &&
+          request.resource.data.memberUids.size() <= resource.data.memberUids.size() + 1 &&
+          request.resource.data.memberUids.hasAll(resource.data.memberUids) &&
+          request.auth.uid in request.resource.data.memberUids &&
+          isValidOptionalTimestamp(request.resource.data, 'updatedAt')
+        ) || (
+          // Member leaving room (removing only own uid)
+          request.auth.uid in resource.data.memberUids &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'updatedAt']) &&
+          request.resource.data.memberUids is list &&
+          resource.data.memberUids.hasAll(request.resource.data.memberUids) &&
+          request.resource.data.memberUids.size() >= resource.data.memberUids.size() - 1 &&
+          !(request.auth.uid in request.resource.data.memberUids) &&
+          isValidOptionalTimestamp(request.resource.data, 'updatedAt')
+        )
+      );
+      allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+
+      match /members/{memberUid} {
+        allow read: if isRoomMember(roomId);
+        allow create, update: if isOwner(memberUid) &&
+          isRoomMember(roomId) &&
+          isValidRoomMember(request.resource.data, memberUid);
+        allow delete: if isOwner(memberUid);
+      }
+
+      match /nudges/{nudgeId} {
+        allow read: if isRoomMember(roomId);
+        allow create: if isRoomMember(roomId) && isValidNudge(request.resource.data);
+        allow update, delete: if false;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

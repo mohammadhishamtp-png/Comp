@@ -1,0 +1,225 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private owner-only user profile and daily focus settings",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "dailyGoalMinutes": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "displayName", "dailyGoalMinutes"]
+    },
+    "StudySubjectDoc": {
+      "title": "StudySubjectDoc",
+      "description": "User's color-coded study subject",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "name": { "type": "string" },
+        "colorHex": { "type": "integer" },
+        "dailyTargetMinutes": { "type": "integer" },
+        "sortOrder": { "type": "integer" },
+        "archived": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "name", "colorHex", "dailyTargetMinutes", "sortOrder", "archived"]
+    },
+    "StudySessionDoc": {
+      "title": "StudySessionDoc",
+      "description": "Completed focus session segment",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "subjectId": { "type": "integer" },
+        "subjectName": { "type": "string" },
+        "subjectColorHex": { "type": "integer" },
+        "mode": { "type": "string", "enum": ["STOPWATCH", "POMODORO", "COUNTDOWN"] },
+        "startMillis": { "type": "integer" },
+        "endMillis": { "type": "integer" },
+        "durationSeconds": { "type": "integer" },
+        "dayEpoch": { "type": "integer" },
+        "interruptionsCount": { "type": "integer" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "subjectId", "subjectName", "subjectColorHex", "mode", "startMillis", "endMillis", "durationSeconds", "dayEpoch"]
+    },
+    "StudyTodoDoc": {
+      "title": "StudyTodoDoc",
+      "description": "Daily subject to-do task",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "subjectId": { "type": "integer" },
+        "subjectName": { "type": "string" },
+        "subjectColorHex": { "type": "integer" },
+        "title": { "type": "string" },
+        "dayEpoch": { "type": "integer" },
+        "completed": { "type": "boolean" },
+        "estimatedMinutes": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "subjectId", "title", "dayEpoch", "completed", "estimatedMinutes"]
+    },
+    "ExamGoalDoc": {
+      "title": "ExamGoalDoc",
+      "description": "Exam D-Day countdown and daily goal",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "title": { "type": "string" },
+        "targetDateEpoch": { "type": "integer" },
+        "targetDailyMinutes": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "title", "targetDateEpoch", "targetDailyMinutes"]
+    },
+    "DayBlockDoc": {
+      "title": "DayBlockDoc",
+      "description": "Scheduled planner time block",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "dayEpoch": { "type": "integer" },
+        "title": { "type": "string" },
+        "why": { "type": "string" },
+        "microStep": { "type": "string" },
+        "startMinuteOfDay": { "type": "integer" },
+        "durationMinutes": { "type": "integer" },
+        "category": { "type": "string" },
+        "decompressionBuffer": { "type": "boolean" },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "dayEpoch", "title", "startMinuteOfDay", "durationMinutes", "category", "decompressionBuffer", "completed"]
+    },
+    "BrainDumpDoc": {
+      "title": "BrainDumpDoc",
+      "description": "Quick ADHD brain dump entry",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "sentToPlanner": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "text", "createdAtMillis", "sentToPlanner"]
+    },
+    "RoomInviteDoc": {
+      "title": "RoomInviteDoc",
+      "description": "Invite code lookup mapping code to study room ID",
+      "type": "object",
+      "properties": {
+        "inviteCode": { "type": "string" },
+        "roomId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["inviteCode", "roomId", "ownerId"]
+    },
+    "StudyRoomDoc": {
+      "title": "StudyRoomDoc",
+      "description": "Shared YPT-style real-time study room",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "inviteCode": { "type": "string" },
+        "description": { "type": "string" },
+        "dailyGoalMinutes": { "type": "integer" },
+        "ownerId": { "type": "string" },
+        "memberUids": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "inviteCode", "description", "dailyGoalMinutes", "ownerId", "memberUids"]
+    },
+    "StudyRoomMemberDoc": {
+      "title": "StudyRoomMemberDoc",
+      "description": "Live study presence of a room member",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "status": { "type": "string", "enum": ["STUDYING", "BREAK", "OFFLINE"] },
+        "activeSubject": { "type": "string" },
+        "subjectColorHex": { "type": "integer" },
+        "todayMinutes": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "status", "activeSubject", "subjectColorHex", "todayMinutes"]
+    },
+    "StudyRoomNudgeDoc": {
+      "title": "StudyRoomNudgeDoc",
+      "description": "Encouragement nudge sent in a study room",
+      "type": "object",
+      "properties": {
+        "fromUid": { "type": "string" },
+        "fromName": { "type": "string" },
+        "toUid": { "type": "string" },
+        "toName": { "type": "string" },
+        "message": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fromUid", "fromName", "toUid", "toName", "message"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile and focus goals"
+    },
+    "/users/{userId}/subjects/{subjectId}": {
+      "schema": { "$ref": "#/entities/StudySubjectDoc" },
+      "description": "User study subjects"
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/StudySessionDoc" },
+      "description": "User focus study sessions"
+    },
+    "/users/{userId}/todos/{todoId}": {
+      "schema": { "$ref": "#/entities/StudyTodoDoc" },
+      "description": "User subject to-do items"
+    },
+    "/users/{userId}/examGoals/{goalId}": {
+      "schema": { "$ref": "#/entities/ExamGoalDoc" },
+      "description": "User exam countdown goals"
+    },
+    "/users/{userId}/blocks/{blockId}": {
+      "schema": { "$ref": "#/entities/DayBlockDoc" },
+      "description": "User scheduled planner blocks"
+    },
+    "/users/{userId}/brainDumps/{dumpId}": {
+      "schema": { "$ref": "#/entities/BrainDumpDoc" },
+      "description": "User brain dump quick captures"
+    },
+    "/roomInvites/{inviteCode}": {
+      "schema": { "$ref": "#/entities/RoomInviteDoc" },
+      "description": "Invite code lookup for joining study rooms"
+    },
+    "/studyRooms/{roomId}": {
+      "schema": { "$ref": "#/entities/StudyRoomDoc" },
+      "description": "Multi-user YPT study rooms"
+    },
+    "/studyRooms/{roomId}/members/{memberUid}": {
+      "schema": { "$ref": "#/entities/StudyRoomMemberDoc" },
+      "description": "Live studying status of room members"
+    },
+    "/studyRooms/{roomId}/nudges/{nudgeId}": {
+      "schema": { "$ref": "#/entities/StudyRoomNudgeDoc" },
+      "description": "Peer encouragement feed in a study room"
+    }
+  }
+}

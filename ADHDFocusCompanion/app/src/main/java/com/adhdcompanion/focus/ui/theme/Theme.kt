@@ -1,47 +1,60 @@
 package com.adhdcompanion.focus.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
 
-private val DarkColors = darkColorScheme(
-    primary = FocusTeal,
-    onPrimary = BgDark,
-    secondary = FocusIndigo,
+private val AmoledDarkColors = darkColorScheme(
+    primary = FocusEmerald,
+    onPrimary = AmoledBlack,
+    primaryContainer = FocusEmeraldDim,
+    onPrimaryContainer = FocusEmerald,
+    secondary = FocusCyan,
+    onSecondary = AmoledBlack,
+    secondaryContainer = AmoledSurfaceHigh,
+    onSecondaryContainer = OnAmoled,
     tertiary = FocusAmber,
-    background = BgDark,
-    onBackground = OnDark,
-    surface = SurfaceDark,
-    onSurface = OnDark,
-    surfaceVariant = SurfaceDarkAlt,
-    onSurfaceVariant = OnDarkMuted
+    onTertiary = AmoledBlack,
+    tertiaryContainer = Color(0xFF332609),
+    onTertiaryContainer = FocusAmber,
+    error = FocusCoral,
+    onError = AmoledBlack,
+    errorContainer = FocusCoralContainer,
+    onErrorContainer = FocusCoral,
+    background = AmoledBlack,
+    onBackground = OnAmoled,
+    surface = AmoledSurface,
+    onSurface = OnAmoled,
+    surfaceVariant = AmoledSurfaceElevated,
+    onSurfaceVariant = OnAmoledMuted,
+    outline = AmoledOutline,
+    outlineVariant = AmoledOutlineSubtle,
+    surfaceContainerLowest = AmoledBlack,
+    surfaceContainerLow = AmoledSurface,
+    surfaceContainer = AmoledSurfaceElevated,
+    surfaceContainerHigh = AmoledSurfaceHigh
 )
 
-private val LightColors = lightColorScheme(
-    primary = FocusTealDark,
-    onPrimary = SurfaceLight,
-    secondary = FocusIndigo,
-    tertiary = FocusAmber,
-    background = BgLight,
-    onBackground = OnLight,
-    surface = SurfaceLight,
-    onSurface = OnLight,
-    surfaceVariant = Color(0xFFF1F1EF),
-    onSurfaceVariant = OnLightMuted
+private val AmoledShapes = Shapes(
+    small = RoundedCornerShape(10.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(22.dp),
+    extraLarge = RoundedCornerShape(28.dp)
 )
 
 @Composable
 fun ADHDFocusCompanionTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val colors = if (darkTheme) DarkColors else LightColors
     MaterialTheme(
-        colorScheme = colors,
+        colorScheme = AmoledDarkColors,
         typography = FocusTypography,
+        shapes = AmoledShapes,
         content = content
     )
 }
