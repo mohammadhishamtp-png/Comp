@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -24,10 +25,13 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -69,6 +73,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -119,6 +126,12 @@ fun FocusLockScreen(
 
     var editingWindow by remember { mutableStateOf<FocusLockWindow?>(null) }
     var showWindowDialog by remember { mutableStateOf(false) }
+    var showSetPasswordDialog by remember { mutableStateOf(false) }
+    var showPasswordExitDialog by remember { mutableStateOf(false) }
+    var customWaitInput by remember(state.config.cooldownMinutes) {
+        mutableStateOf(state.config.cooldownMinutes.toString())
+    }
+    var customWaitError by remember { mutableStateOf<String?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
@@ -475,30 +488,43 @@ fun FocusLockScreen(
                                 val mins = eval.tempUnlockRemainingSeconds / 60
                                 val secs = eval.tempUnlockRemainingSeconds % 60
                                 Text(
-                                    "You can adjust or disable lock rules for %d:%02d before blocking re-arms automatically."
+                                    "You can adjust, disable, or remove the lock for %d:%02d before blocking re-arms automatically."
                                         .format(Locale.getDefault(), mins, secs),
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                                 Spacer(Modifier.height(10.dp))
-                                Button(
-                                    onClick = viewModel::relockNow,
-                                    modifier = Modifier.testTag("relock_now_button")
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Text("Re-lock immediately")
+                                    Button(
+                                        onClick = viewModel::removeLockNow,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("remove_lock_now_button")
+                                    ) {
+                                        Text("Remove Lock")
+                                    }
+                                    OutlinedButton(
+                                        onClick = viewModel::relockNow,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("relock_now_button")
+                                    ) {
+                                        Text("Re-lock now")
+                                    }
                                 }
                             }
 
                             eval.isCooldownRunning -> {
-                                val mins = eval.cooldownRemainingSeconds / 60
-                                val secs = eval.cooldownRemainingSeconds % 60
                                 Text(
-                                    "Blocking stays fully active during this countdown. Rules unlock for editing in:",
+                                    "Blocking stays fully active during this countdown. Rules unlock for editing/removal in:",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f)
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    "%02d:%02d".format(Locale.getDefault(), mins, secs),
+                                    FocusLockManager.formatCountdownSeconds(eval.cooldownRemainingSeconds),
                                     style = MaterialTheme.typography.displaySmall,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onPrimary
@@ -509,9 +535,28 @@ fun FocusLockScreen(
                                     colors = ButtonDefaults.outlinedButtonColors(
                                         contentColor = MaterialTheme.colorScheme.onPrimary
                                     ),
-                                    modifier = Modifier.testTag("cancel_cooldown_button")
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("cancel_cooldown_button")
                                 ) {
                                     Text("Cancel unlock request")
+                                }
+                                if (state.config.hasExitPassword) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Button(
+                                        onClick = { showPasswordExitDialog = true },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.onPrimary,
+                                            contentColor = MaterialTheme.colorScheme.primary
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("password_exit_running_button")
+                                    ) {
+                                        Icon(Icons.Filled.Key, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Exit Lock with Password")
+                                    }
                                 }
                             }
 
@@ -519,8 +564,14 @@ fun FocusLockScreen(
                                 val endText = eval.activeWindow?.let {
                                     FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay)
                                 } ?: ""
+                                val waitLabel = FocusLockManager.formatDurationMinutes(state.config.cooldownMinutes)
+                                val exitHint = if (state.config.hasExitPassword) {
+                                    ", or enter your Exit Password to unlock right away."
+                                } else {
+                                    "."
+                                }
                                 Text(
-                                    "Active until $endText. Editing or disabling lock rules mid-session requires a strict ${state.config.cooldownMinutes}-minute cooldown (blocking stays active during the countdown).",
+                                    "Active until $endText. Removing or editing lock rules mid-session requires waiting $waitLabel (blocking stays active during the countdown)$exitHint",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f)
                                 )
@@ -531,11 +582,29 @@ fun FocusLockScreen(
                                         containerColor = MaterialTheme.colorScheme.onPrimary,
                                         contentColor = MaterialTheme.colorScheme.primary
                                     ),
-                                    modifier = Modifier.testTag("start_cooldown_button")
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("start_cooldown_button")
                                 ) {
                                     Icon(Icons.Filled.Timer, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(8.dp))
-                                    Text("Start ${state.config.cooldownMinutes}-min unlock cooldown")
+                                    Text("Wait $waitLabel to remove lock")
+                                }
+                                if (state.config.hasExitPassword) {
+                                    Spacer(Modifier.height(8.dp))
+                                    OutlinedButton(
+                                        onClick = { showPasswordExitDialog = true },
+                                        colors = ButtonDefaults.outlinedButtonColors(
+                                            contentColor = MaterialTheme.colorScheme.onPrimary
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("password_exit_button")
+                                    ) {
+                                        Icon(Icons.Filled.Key, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Exit Lock with Password")
+                                    }
                                 }
                             }
                         }
@@ -606,21 +675,182 @@ fun FocusLockScreen(
 
             Spacer(Modifier.height(16.dp))
 
-            // 5. Cooldown duration selector (10–15 min)
-            SectionLabel("Anti-impulse edit cooldown")
+            // 5. Custom waiting time setup (1–240 min)
+            SectionLabel("Waiting time to remove lock")
             Text(
-                "Cooldown required before lock rules can be edited or disabled mid-session: ${state.config.cooldownMinutes} minutes",
+                "Choose how long you must wait before an active lock can be removed or edited: ${FocusLockManager.formatDurationMinutes(state.config.cooldownMinutes)}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(Modifier.height(8.dp))
+            val waitPresets = listOf(1, 5, 10, 15, 30, 60, 120)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                waitPresets.forEach { presetMin ->
+                    val label = if (presetMin >= 60) "${presetMin / 60}h" else "${presetMin}m"
+                    FilterChip(
+                        selected = state.config.cooldownMinutes == presetMin,
+                        onClick = {
+                            customWaitError = null
+                            viewModel.setCooldownMinutes(presetMin)
+                        },
+                        enabled = isRuleEditingAllowed,
+                        label = { Text(label) },
+                        modifier = Modifier.testTag("wait_preset_${presetMin}m_chip")
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
             Slider(
-                value = state.config.cooldownMinutes.toFloat(),
-                onValueChange = { viewModel.setCooldownMinutes(it.toInt()) },
-                valueRange = 10f..15f,
-                steps = 4,
+                value = state.config.cooldownMinutes.coerceAtMost(120).toFloat(),
+                onValueChange = {
+                    customWaitError = null
+                    viewModel.setCooldownMinutes(it.toInt())
+                },
+                valueRange = FocusLockManager.MIN_WAIT_MINUTES.toFloat()..120f,
                 enabled = isRuleEditingAllowed,
                 modifier = Modifier.testTag("cooldown_slider")
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = customWaitInput,
+                    onValueChange = { raw ->
+                        customWaitInput = raw.filter { it.isDigit() }.take(3)
+                        customWaitError = null
+                    },
+                    label = {
+                        Text(
+                            "Custom wait (${FocusLockManager.MIN_WAIT_MINUTES}–${FocusLockManager.MAX_WAIT_MINUTES} min)"
+                        )
+                    },
+                    singleLine = true,
+                    enabled = isRuleEditingAllowed,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    isError = customWaitError != null,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("custom_wait_minutes_input")
+                )
+                Button(
+                    onClick = {
+                        val parsed = customWaitInput.toIntOrNull()
+                        if (parsed == null || parsed !in FocusLockManager.MIN_WAIT_MINUTES..FocusLockManager.MAX_WAIT_MINUTES) {
+                            customWaitError =
+                                "Enter ${FocusLockManager.MIN_WAIT_MINUTES} to ${FocusLockManager.MAX_WAIT_MINUTES} min"
+                        } else {
+                            customWaitError = null
+                            viewModel.setCooldownMinutes(parsed)
+                        }
+                    },
+                    enabled = isRuleEditingAllowed,
+                    modifier = Modifier.testTag("apply_custom_wait_button")
+                ) {
+                    Text("Set")
+                }
+            }
+            customWaitError?.let { err ->
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = err,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            // 5b. Password Exit Option
+            SectionLabel("Password exit option")
+            Spacer(Modifier.height(6.dp))
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("password_exit_settings_card")
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Filled.Key,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = if (state.config.hasExitPassword) {
+                                "Exit password is enabled"
+                            } else {
+                                "No exit password set"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = if (state.config.hasExitPassword) {
+                            "You can unlock or exit an active lock immediately by entering your password instead of waiting."
+                        } else {
+                            "Optional: set a password or PIN so you can exit an active lock immediately without waiting for the timer."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!isRuleEditingAllowed) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "Unlock the active session first to change or remove your exit password.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    if (!state.config.hasExitPassword) {
+                        Button(
+                            onClick = { showSetPasswordDialog = true },
+                            enabled = isRuleEditingAllowed,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("set_exit_password_button")
+                        ) {
+                            Icon(Icons.Filled.Key, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Set Exit Password")
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { showSetPasswordDialog = true },
+                                enabled = isRuleEditingAllowed,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("change_exit_password_button")
+                            ) {
+                                Text("Change")
+                            }
+                            OutlinedButton(
+                                onClick = viewModel::removeExitPassword,
+                                enabled = isRuleEditingAllowed,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("remove_exit_password_button")
+                            ) {
+                                Text("Remove")
+                            }
+                        }
+                    }
+                }
+            }
 
             Spacer(Modifier.height(16.dp))
 
@@ -763,6 +993,31 @@ fun FocusLockScreen(
             }
         )
     }
+
+    if (showSetPasswordDialog) {
+        SetExitPasswordDialog(
+            isUpdating = state.config.hasExitPassword,
+            onDismiss = { showSetPasswordDialog = false },
+            onSave = { password, confirm ->
+                if (viewModel.setExitPassword(password, confirm)) {
+                    showSetPasswordDialog = false
+                }
+            }
+        )
+    }
+
+    if (showPasswordExitDialog) {
+        PasswordExitDialog(
+            onDismiss = { showPasswordExitDialog = false },
+            onVerifyAndUnlock = { password, exitCompletely ->
+                val ok = viewModel.unlockWithPassword(password, exitCompletely)
+                if (ok) {
+                    showPasswordExitDialog = false
+                }
+                ok
+            }
+        )
+    }
 }
 
 @Composable
@@ -890,6 +1145,187 @@ private fun FocusWindowEditorDialog(
                 }
             ) { Text("Save") }
         },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun SetExitPasswordDialog(
+    isUpdating: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (password: String, confirmPassword: String) -> Unit
+) {
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isUpdating) "Change exit password" else "Set exit password") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Enter a password or PIN (at least ${FocusLockManager.MIN_PASSWORD_LENGTH} characters). You can use it anytime to exit an active lock immediately.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = {
+                        password = it
+                        errorText = null
+                    },
+                    label = { Text("Password / PIN") },
+                    singleLine = true,
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showPassword = !showPassword }) {
+                            Icon(
+                                if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (showPassword) "Hide password" else "Show password"
+                            )
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("set_password_input")
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = confirmPassword,
+                    onValueChange = {
+                        confirmPassword = it
+                        errorText = null
+                    },
+                    label = { Text("Confirm password") },
+                    singleLine = true,
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("confirm_password_input")
+                )
+                errorText?.let { err ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    when {
+                        password.length < FocusLockManager.MIN_PASSWORD_LENGTH -> {
+                            errorText =
+                                "Use at least ${FocusLockManager.MIN_PASSWORD_LENGTH} characters."
+                        }
+                        password != confirmPassword -> {
+                            errorText = "Passwords do not match."
+                        }
+                        else -> onSave(password, confirmPassword)
+                    }
+                },
+                modifier = Modifier.testTag("save_exit_password_confirm_button")
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun PasswordExitDialog(
+    onDismiss: () -> Unit,
+    onVerifyAndUnlock: (password: String, exitCompletely: Boolean) -> Boolean
+) {
+    var password by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Exit Lock with Password") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Enter your exit password to unlock for 5 minutes or turn off the active lock.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = {
+                        password = it
+                        errorText = null
+                    },
+                    label = { Text("Exit password") },
+                    singleLine = true,
+                    isError = errorText != null,
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showPassword = !showPassword }) {
+                            Icon(
+                                if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (showPassword) "Hide password" else "Show password"
+                            )
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("unlock_password_input")
+                )
+                errorText?.let { err ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = {
+                        if (password.isBlank()) {
+                            errorText = "Enter your password."
+                        } else if (!onVerifyAndUnlock(password, true)) {
+                            errorText = "Incorrect password. Try again."
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("password_exit_completely_button")
+                ) {
+                    Text("Remove Lock Now")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        if (password.isBlank()) {
+                            errorText = "Enter your password."
+                        } else if (!onVerifyAndUnlock(password, false)) {
+                            errorText = "Incorrect password. Try again."
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("password_temp_unlock_button")
+                ) {
+                    Text("Unlock for 5 Minutes")
+                }
+            }
+        },
+        confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }

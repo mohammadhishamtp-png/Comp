@@ -3,6 +3,7 @@ package com.adhdcompanion.focus.blocker
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.util.Base64
 import com.adhdcompanion.focus.alarm.AlarmScheduler
 import com.adhdcompanion.focus.model.BlockedAppEvent
 import com.adhdcompanion.focus.model.FocusLockConfig
@@ -16,11 +17,15 @@ import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.util.Locale
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 
 /**
  * Central state & evaluation engine for Scheduled App Blocker & Anti-Impulse Lock.
@@ -45,13 +50,22 @@ class FocusLockManager private constructor(context: Context) {
     @Suppress("USELESS_ELVIS")
     @Synchronized
     private fun loadConfig(): FocusLockConfig {
-        val raw = prefs.getString(KEY_CONFIG_JSON, null) ?: return FocusLockConfig()
+        val hasPwd = hasExitPassword()
+        val raw = prefs.getString(KEY_CONFIG_JSON, null)
+            ?: return FocusLockConfig(hasExitPassword = hasPwd)
         val parsed = runCatching { gson.fromJson(raw, FocusLockConfig::class.java) }
-            .getOrNull() ?: return FocusLockConfig()
+            .getOrNull() ?: return FocusLockConfig(hasExitPassword = hasPwd)
+        val normalizedWait = if (parsed.cooldownMinutes <= 0) {
+            10
+        } else {
+            parsed.cooldownMinutes.coerceIn(MIN_WAIT_MINUTES, MAX_WAIT_MINUTES)
+        }
         return parsed.copy(
             mode = parsed.mode ?: LockMode.BLOCK_LIST,
             selectedPackages = parsed.selectedPackages ?: emptySet(),
-            windows = parsed.windows ?: FocusLockConfig().windows
+            windows = parsed.windows ?: FocusLockConfig().windows,
+            cooldownMinutes = normalizedWait,
+            hasExitPassword = hasPwd
         )
     }
 
@@ -185,7 +199,7 @@ class FocusLockManager private constructor(context: Context) {
         if (current.unlockCooldownEndMillis > now) {
             return evaluateNow(now)
         }
-        val durationMs = current.cooldownMinutes.coerceIn(1, 60) * 60_000L
+        val durationMs = current.cooldownMinutes.coerceIn(MIN_WAIT_MINUTES, MAX_WAIT_MINUTES) * 60_000L
         saveConfig(
             current.copy(
                 unlockCooldownEndMillis = now + durationMs,
@@ -210,6 +224,95 @@ class FocusLockManager private constructor(context: Context) {
             )
         )
         return evaluateAndSyncState(appContext)
+    }
+
+    @Synchronized
+    fun removeLockWhenUnlocked(): Boolean {
+        if (!canEditRules()) return false
+        saveConfig(
+            _config.value.copy(
+                isMasterEnabled = false,
+                unlockCooldownEndMillis = 0L,
+                temporaryUnlockUntilMillis = 0L,
+                quickLockUntilMillis = 0L
+            )
+        )
+        evaluateAndSyncState(appContext)
+        return true
+    }
+
+    fun hasExitPassword(): Boolean {
+        val hash = prefs.getString(KEY_EXIT_PASSWORD_HASH, null)
+        val salt = prefs.getString(KEY_EXIT_PASSWORD_SALT, null)
+        return !hash.isNullOrBlank() && !salt.isNullOrBlank()
+    }
+
+    @Synchronized
+    fun setExitPassword(password: String): Boolean {
+        if (!canEditRules()) return false
+        if (password.length < MIN_PASSWORD_LENGTH) return false
+        val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val hashBytes = derivePasswordHash(password, salt)
+        prefs.edit()
+            .putString(KEY_EXIT_PASSWORD_SALT, Base64.encodeToString(salt, Base64.NO_WRAP))
+            .putString(KEY_EXIT_PASSWORD_HASH, Base64.encodeToString(hashBytes, Base64.NO_WRAP))
+            .apply()
+        saveConfig(_config.value.copy(hasExitPassword = true))
+        return true
+    }
+
+    @Synchronized
+    fun clearExitPassword(): Boolean {
+        if (!canEditRules()) return false
+        prefs.edit()
+            .remove(KEY_EXIT_PASSWORD_SALT)
+            .remove(KEY_EXIT_PASSWORD_HASH)
+            .apply()
+        saveConfig(_config.value.copy(hasExitPassword = false))
+        return true
+    }
+
+    fun verifyExitPassword(password: String): Boolean {
+        val saltB64 = prefs.getString(KEY_EXIT_PASSWORD_SALT, null) ?: return false
+        val hashB64 = prefs.getString(KEY_EXIT_PASSWORD_HASH, null) ?: return false
+        val salt = runCatching { Base64.decode(saltB64, Base64.NO_WRAP) }.getOrNull() ?: return false
+        val expectedHash = runCatching { Base64.decode(hashB64, Base64.NO_WRAP) }.getOrNull() ?: return false
+        val candidateHash = derivePasswordHash(password, salt)
+        return MessageDigest.isEqual(expectedHash, candidateHash)
+    }
+
+    @Synchronized
+    fun unlockWithPassword(password: String, exitCompletely: Boolean): Boolean {
+        if (!verifyExitPassword(password)) return false
+        val now = System.currentTimeMillis()
+        val current = _config.value
+        val updated = if (exitCompletely) {
+            current.copy(
+                isMasterEnabled = false,
+                unlockCooldownEndMillis = 0L,
+                temporaryUnlockUntilMillis = 0L,
+                quickLockUntilMillis = 0L
+            )
+        } else {
+            current.copy(
+                unlockCooldownEndMillis = 0L,
+                temporaryUnlockUntilMillis = now + TEMP_UNLOCK_DURATION_MS
+            )
+        }
+        saveConfig(updated)
+        evaluateAndSyncState(appContext)
+        return true
+    }
+
+    private fun derivePasswordHash(password: String, salt: ByteArray): ByteArray {
+        return runCatching {
+            val spec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, 256)
+            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+        }.getOrElse {
+            val md = MessageDigest.getInstance("SHA-256")
+            md.update(salt)
+            md.digest(password.toByteArray(Charsets.UTF_8))
+        }
     }
 
     @Synchronized
@@ -485,8 +588,14 @@ class FocusLockManager private constructor(context: Context) {
         private const val PREFS_NAME = "focus_lock_prefs"
         private const val KEY_CONFIG_JSON = "focus_lock_config_json"
         private const val KEY_BLOCKED_EVENTS_JSON = "blocked_app_events_json"
+        private const val KEY_EXIT_PASSWORD_SALT = "exit_password_salt"
+        private const val KEY_EXIT_PASSWORD_HASH = "exit_password_hash"
         private const val QUICK_LOCK_WINDOW_ID = "quick_lock_now"
         private const val TEMP_UNLOCK_DURATION_MS = 5 * 60_000L
+        private const val PBKDF2_ITERATIONS = 10_000
+        const val MIN_WAIT_MINUTES = 1
+        const val MAX_WAIT_MINUTES = 240
+        const val MIN_PASSWORD_LENGTH = 4
 
         @Volatile
         private var INSTANCE: FocusLockManager? = null
@@ -508,6 +617,29 @@ class FocusLockManager private constructor(context: Context) {
                 else -> h24
             }
             return "%d:%02d %s".format(Locale.getDefault(), h12, min, amPm)
+        }
+
+        fun formatDurationMinutes(minutes: Int): String {
+            val safe = minutes.coerceAtLeast(1)
+            val hrs = safe / 60
+            val mins = safe % 60
+            return when {
+                hrs > 0 && mins > 0 -> "${hrs}h ${mins}m"
+                hrs > 0 -> "${hrs}h"
+                else -> "$safe min"
+            }
+        }
+
+        fun formatCountdownSeconds(totalSeconds: Int): String {
+            val safe = totalSeconds.coerceAtLeast(0)
+            val hrs = safe / 3600
+            val mins = (safe % 3600) / 60
+            val secs = safe % 60
+            return if (hrs > 0) {
+                "%d:%02d:%02d".format(Locale.getDefault(), hrs, mins, secs)
+            } else {
+                "%02d:%02d".format(Locale.getDefault(), mins, secs)
+            }
         }
     }
 }

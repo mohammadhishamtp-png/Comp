@@ -52,6 +52,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
     private var overlayTitleView: TextView? = null
     private var overlayBodyView: TextView? = null
     private var overlayBadgeView: TextView? = null
+    private var overlayPasswordButton: Button? = null
     private var activeShieldPackage: String? = null
     private var activeShieldLabel: String? = null
     private var activeShieldReason: String = REASON_BLOCKED_APP
@@ -444,11 +445,14 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                     else -> "$windowName is active until $endText.\nTake one slow breath — no shame, just a gentle redirect back to your current step."
                 }
 
+                val hasExitPassword = !isTest && FocusLockManager.getInstance(this).hasExitPassword()
+
                 val existing = overlayView
                 if (existing != null && existing.isAttachedToWindow) {
                     overlayBadgeView?.text = badgeText
                     overlayTitleView?.text = titleText
                     overlayBodyView?.text = bodyText
+                    overlayPasswordButton?.visibility = if (hasExitPassword) View.VISIBLE else View.GONE
                     return@runCatching
                 } else if (existing != null) {
                     overlayView = null
@@ -462,7 +466,13 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                     return@runCatching
                 }
 
-                val overlay = buildShieldView(badgeText, titleText, bodyText, isTest = isTest)
+                val overlay = buildShieldView(
+                    badgeText = badgeText,
+                    titleText = titleText,
+                    bodyText = bodyText,
+                    isTest = isTest,
+                    showPasswordExit = hasExitPassword
+                )
                 val params = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
@@ -498,7 +508,8 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         badgeText: String,
         titleText: String,
         bodyText: String,
-        isTest: Boolean = false
+        isTest: Boolean = false,
+        showPasswordExit: Boolean = false
     ): View {
         val density = resources.displayMetrics.density
         fun dp(value: Int): Int = (value * density).toInt()
@@ -618,6 +629,24 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             }
         }
 
+        val passwordButton = Button(this).apply {
+            text = "Exit Lock with Password"
+            isAllCaps = false
+            setTextColor(Color.parseColor("#8ED8B0"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            background = secondaryBg
+            minHeight = dp(48)
+            visibility = if (showPasswordExit) View.VISIBLE else View.GONE
+            setOnClickListener {
+                val pkg = activeShieldPackage ?: packageName
+                val label = activeShieldLabel ?: "Blocked App"
+                val reason = activeShieldReason
+                removeOverlay()
+                openMainAppShield(pkg, label, reason, openPasswordExit = true)
+            }
+        }
+        overlayPasswordButton = passwordButton
+
         card.addView(
             badge,
             LinearLayout.LayoutParams(
@@ -655,6 +684,15 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
                 topMargin = dp(10)
             }
         )
+        card.addView(
+            passwordButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(10)
+            }
+        )
 
         root.addView(
             card,
@@ -667,12 +705,20 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
         return root
     }
 
-    private fun openMainAppShield(blockedPackage: String, appLabel: String, reason: String) {
+    private fun openMainAppShield(
+        blockedPackage: String,
+        appLabel: String,
+        reason: String,
+        openPasswordExit: Boolean = false
+    ) {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(MainActivity.EXTRA_BLOCKED_PACKAGE, blockedPackage)
             putExtra(MainActivity.EXTRA_BLOCKED_APP_NAME, appLabel)
             putExtra(MainActivity.EXTRA_LOCK_BLOCKED_REASON, reason)
+            if (openPasswordExit) {
+                putExtra(MainActivity.EXTRA_OPEN_PASSWORD_EXIT, true)
+            }
         }
         runCatching { startActivity(intent) }
     }
@@ -684,6 +730,7 @@ class FocusBlockerAccessibilityService : AccessibilityService() {
             overlayTitleView = null
             overlayBodyView = null
             overlayBadgeView = null
+            overlayPasswordButton = null
             activeShieldReason = REASON_BLOCKED_APP
             runCatching {
                 windowManager?.removeViewImmediate(view)

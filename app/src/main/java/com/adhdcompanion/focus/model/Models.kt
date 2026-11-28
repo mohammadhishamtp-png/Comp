@@ -104,7 +104,8 @@ data class FocusLockConfig(
     val cooldownMinutes: Int = 10,
     val unlockCooldownEndMillis: Long = 0L,
     val temporaryUnlockUntilMillis: Long = 0L,
-    val quickLockUntilMillis: Long = 0L
+    val quickLockUntilMillis: Long = 0L,
+    val hasExitPassword: Boolean = false
 )
 
 data class InstalledAppInfo(

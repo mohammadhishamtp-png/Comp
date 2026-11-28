@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.adhdcompanion.focus.blocker.FocusBlockerAccessibilityService
+import com.adhdcompanion.focus.blocker.FocusLockManager
 import com.adhdcompanion.focus.di.AppContainer
 import com.adhdcompanion.focus.model.FocusLockConfig
 import com.adhdcompanion.focus.model.FocusLockWindow
@@ -133,8 +134,12 @@ class FocusLockViewModel(
     }
 
     fun setCooldownMinutes(minutes: Int) {
+        val safeMinutes = minutes.coerceIn(
+            FocusLockManager.MIN_WAIT_MINUTES,
+            FocusLockManager.MAX_WAIT_MINUTES
+        )
         val updated = lockManager.updateConfigIfAllowed {
-            it.copy(cooldownMinutes = minutes.coerceIn(10, 15))
+            it.copy(cooldownMinutes = safeMinutes)
         }
         if (!updated) notifyLocked()
     }
@@ -210,6 +215,60 @@ class FocusLockViewModel(
         _uiState.value = _uiState.value.copy(feedbackMessage = "Focus lock re-armed.")
     }
 
+    fun removeLockNow() {
+        val removed = lockManager.removeLockWhenUnlocked()
+        if (removed) {
+            _uiState.value = _uiState.value.copy(feedbackMessage = "Focus lock removed.")
+        } else {
+            notifyLocked()
+        }
+    }
+
+    fun setExitPassword(password: String, confirmPassword: String): Boolean {
+        if (password.length < FocusLockManager.MIN_PASSWORD_LENGTH) {
+            _uiState.value = _uiState.value.copy(
+                feedbackMessage = "Password must be at least ${FocusLockManager.MIN_PASSWORD_LENGTH} characters."
+            )
+            return false
+        }
+        if (password != confirmPassword) {
+            _uiState.value = _uiState.value.copy(feedbackMessage = "Passwords do not match.")
+            return false
+        }
+        val saved = lockManager.setExitPassword(password)
+        if (saved) {
+            _uiState.value = _uiState.value.copy(
+                feedbackMessage = "Exit password saved. You can now exit any active lock with this password."
+            )
+        } else {
+            notifyLocked()
+        }
+        return saved
+    }
+
+    fun removeExitPassword() {
+        val cleared = lockManager.clearExitPassword()
+        if (cleared) {
+            _uiState.value = _uiState.value.copy(feedbackMessage = "Exit password removed.")
+        } else {
+            notifyLocked()
+        }
+    }
+
+    fun unlockWithPassword(password: String, exitCompletely: Boolean): Boolean {
+        val ok = lockManager.unlockWithPassword(password, exitCompletely)
+        if (ok) {
+            _uiState.value = _uiState.value.copy(
+                feedbackMessage = if (exitCompletely) {
+                    "Lock removed using your exit password."
+                } else {
+                    "Unlocked for 5 minutes using your exit password."
+                }
+            )
+        }
+        return ok
+    }
+
     fun startQuickLock(durationMinutes: Int) {
         val cfg = _uiState.value.config
         if (cfg.mode == LockMode.BLOCK_LIST && cfg.selectedPackages.isEmpty()) {
@@ -241,8 +300,13 @@ class FocusLockViewModel(
     }
 
     private fun notifyLocked() {
+        val hasPwd = _uiState.value.config.hasExitPassword
         _uiState.value = _uiState.value.copy(
-            feedbackMessage = "Lock window active. Start the cooldown timer to edit rules."
+            feedbackMessage = if (hasPwd) {
+                "Lock window active. Wait the countdown or use your Exit Password to change rules."
+            } else {
+                "Lock window active. Start the waiting timer to edit or remove the lock."
+            }
         )
     }
 }

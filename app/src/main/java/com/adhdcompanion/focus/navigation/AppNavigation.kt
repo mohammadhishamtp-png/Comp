@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -23,11 +24,17 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -46,6 +53,7 @@ import com.adhdcompanion.focus.ui.screens.DashboardScreen
 import com.adhdcompanion.focus.ui.screens.DoubtSolverScreen
 import com.adhdcompanion.focus.ui.screens.FocusLockScreen
 import com.adhdcompanion.focus.ui.screens.NowBriefingScreen
+import com.adhdcompanion.focus.ui.screens.PasswordExitDialog
 import com.adhdcompanion.focus.ui.screens.PlannerScreen
 import com.adhdcompanion.focus.ui.screens.SettingsScreen
 import com.adhdcompanion.focus.ui.screens.StuckScreen
@@ -73,6 +81,7 @@ fun AppNavigation(
     autoSpeakTriggerId: Int = 0,
     navigateToNowTriggerId: Int = 0,
     navigateToFocusLockTriggerId: Int = 0,
+    openPasswordExitTriggerId: Int = 0,
     blockedPrompt: BlockedRedirectPrompt? = null,
     onDismissBlockedPrompt: () -> Unit = {}
 ) {
@@ -114,6 +123,7 @@ fun AppNavigation(
         FocusLockShieldScreen(
             container = container,
             prompt = blockedPrompt,
+            openPasswordExitTriggerId = openPasswordExitTriggerId,
             onReturnToFocus = {
                 onDismissBlockedPrompt()
                 navController.navigate(FocusDestination.Now.route) {
@@ -135,6 +145,9 @@ fun AppNavigation(
                 navController.navigate(FocusDestination.FocusLock.route) {
                     launchSingleTop = true
                 }
+            },
+            onPasswordUnlocked = {
+                onDismissBlockedPrompt()
             }
         )
         return
@@ -223,15 +236,25 @@ fun AppNavigation(
 private fun FocusLockShieldScreen(
     container: AppContainer,
     prompt: BlockedRedirectPrompt,
+    openPasswordExitTriggerId: Int,
     onReturnToFocus: () -> Unit,
     onOpenStuck: () -> Unit,
-    onOpenLockSettings: () -> Unit
+    onOpenLockSettings: () -> Unit,
+    onPasswordUnlocked: () -> Unit
 ) {
+    val config by container.focusLockManager.config.collectAsState()
     val eval = container.focusLockManager.evaluateNow()
     val endText = eval.activeWindow?.let { FocusLockManager.formatMinuteOfDay(it.endMinuteOfDay) }
         ?: "your scheduled end time"
 
     val isTamper = prompt.reason == FocusBlockerAccessibilityService.REASON_TAMPER
+    var showPasswordExitDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(openPasswordExitTriggerId) {
+        if (openPasswordExitTriggerId > 0 && config.hasExitPassword) {
+            showPasswordExitDialog = true
+        }
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -260,7 +283,7 @@ private fun FocusLockShieldScreen(
             Spacer(Modifier.height(10.dp))
             Text(
                 text = if (isTamper) {
-                    "App Info, Uninstall, and Accessibility Settings are guarded during your focus window (active until $endText). Start the cooldown timer inside Lock Settings if you genuinely need to adjust rules."
+                    "App Info, Uninstall, and Accessibility Settings are guarded during your focus window (active until $endText). Start the waiting timer inside Lock Settings if you genuinely need to adjust rules."
                 } else {
                     "Your scheduled focus window (${eval.activeWindow?.name ?: "Focus"}) is active until $endText. Take one slow breath — no shame, just a gentle redirect."
                 },
@@ -305,6 +328,33 @@ private fun FocusLockShieldScreen(
                     Text("Lock rules")
                 }
             }
+            if (config.hasExitPassword) {
+                Spacer(Modifier.height(10.dp))
+                TextButton(
+                    onClick = { showPasswordExitDialog = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("shield_password_exit_button")
+                ) {
+                    Icon(Icons.Filled.Key, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Exit Lock with Password")
+                }
+            }
         }
+    }
+
+    if (showPasswordExitDialog) {
+        PasswordExitDialog(
+            onDismiss = { showPasswordExitDialog = false },
+            onVerifyAndUnlock = { password, exitCompletely ->
+                val ok = container.focusLockManager.unlockWithPassword(password, exitCompletely)
+                if (ok) {
+                    showPasswordExitDialog = false
+                    onPasswordUnlocked()
+                }
+                ok
+            }
+        )
     }
 }

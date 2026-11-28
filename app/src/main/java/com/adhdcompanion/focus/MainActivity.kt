@@ -24,6 +24,7 @@ class MainActivity : ComponentActivity() {
     private var autoSpeakTriggerId by mutableIntStateOf(0)
     private var navigateToNowTriggerId by mutableIntStateOf(0)
     private var navigateToFocusLockTriggerId by mutableIntStateOf(0)
+    private var openPasswordExitTriggerId by mutableIntStateOf(0)
     private var blockedPrompt by mutableStateOf<BlockedRedirectPrompt?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,6 +49,7 @@ class MainActivity : ComponentActivity() {
                         autoSpeakTriggerId = autoSpeakTriggerId,
                         navigateToNowTriggerId = navigateToNowTriggerId,
                         navigateToFocusLockTriggerId = navigateToFocusLockTriggerId,
+                        openPasswordExitTriggerId = openPasswordExitTriggerId,
                         blockedPrompt = blockedPrompt,
                         onDismissBlockedPrompt = { blockedPrompt = null }
                     )
@@ -92,6 +94,11 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(EXTRA_OPEN_FOCUS_LOCK)
         }
 
+        if (intent.getBooleanExtra(EXTRA_OPEN_PASSWORD_EXIT, false)) {
+            openPasswordExitTriggerId++
+            intent.removeExtra(EXTRA_OPEN_PASSWORD_EXIT)
+        }
+
         if (intent.getBooleanExtra(EXTRA_AUTO_SPEAK, false)) {
             navigateToNowTriggerId++
             if (!AlarmEventBus.isRinging.value) {
@@ -105,6 +112,7 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_AUTO_SPEAK = "extra_auto_speak"
         const val EXTRA_ALARM_LABEL = "extra_alarm_label"
         const val EXTRA_OPEN_FOCUS_LOCK = "extra_open_focus_lock"
+        const val EXTRA_OPEN_PASSWORD_EXIT = "extra_open_password_exit"
         const val EXTRA_BLOCKED_PACKAGE = "extra_blocked_package"
         const val EXTRA_BLOCKED_APP_NAME = "extra_blocked_app_name"
         const val EXTRA_LOCK_BLOCKED_REASON = "extra_lock_blocked_reason"
