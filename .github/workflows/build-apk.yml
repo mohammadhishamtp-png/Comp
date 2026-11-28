@@ -18,10 +18,49 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Gradle 8.7
+      - name: Set up Gradle 8.14.4
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.7"
+          gradle-version: "8.14.4"
+
+      - name: Restore google-services.json from secret
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -f "app/google-services.json" ]; then
+            echo "Using existing app/google-services.json from repository."
+            exit 0
+          fi
+          if [ -z "${GOOGLE_SERVICES_JSON}" ]; then
+            echo "::error::Missing app/google-services.json and GitHub Secret GOOGLE_SERVICES_JSON is not set. Add GOOGLE_SERVICES_JSON under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import base64, json, os, sys
+
+          raw = os.environ["GOOGLE_SERVICES_JSON"].strip()
+          if not raw.startswith("{"):
+              try:
+                  raw = base64.b64decode(raw, validate=False).decode("utf-8").strip()
+              except Exception as exc:
+                  print(f"::error::GOOGLE_SERVICES_JSON is neither valid JSON nor valid base64: {exc}")
+                  sys.exit(1)
+
+          try:
+              data = json.loads(raw)
+          except Exception as exc:
+              print(f"::error::Decoded GOOGLE_SERVICES_JSON is not valid JSON: {exc}")
+              sys.exit(1)
+
+          if "project_info" not in data or "client" not in data:
+              print("::error::GOOGLE_SERVICES_JSON is missing required Firebase fields (project_info/client).")
+              sys.exit(1)
+
+          with open("app/google-services.json", "w", encoding="utf-8") as f:
+              json.dump(data, f, indent=2)
+
+          print("Restored app/google-services.json from GOOGLE_SERVICES_JSON secret.")
+          PY
 
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
